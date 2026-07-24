@@ -1,239 +1,186 @@
-# 13. 入口模式、SDK、远程控制与 gRPC
+# 13. 使用入口与部署形态
 
-OpenClaude 的各入口共享同一 QueryEngine 和工具定义。每个入口具有独立的 UI、输入协议和权限交互。入口差异决定具体功能的可用性。
+## 1. 入口设计
 
-## 13.1 发布入口
+OpenClaude 提供多种使用入口。各入口共用会话编排、上下文、模型、工具和持久化模块。输入输出、权限确认和资源生命周期由入口单独管理。
 
-npm 包公开两个主要运行产物：
+| 入口 | 主要用户 | 输入 | 输出 |
+|---|---|---|---|
+| TUI | 终端用户 | 键盘、粘贴、附件 | 交互界面 |
+| Headless | Shell 脚本和自动化 | 参数、stdin、结构化消息 | 文本或 JSON |
+| SDK | 应用开发者 | API 调用 | 异步事件 |
+| MCP Server | MCP Client | tools/list 和 tools/call | MCP 结果 |
+| Remote | 远程控制端 | WebSocket 消息 | 远程界面事件 |
+| SSH | 远端开发环境 | SSH 命令和转发 | 远端会话 |
+| Background CLI | 长时间命令 | CLI 参数 | 日志和 attach |
+| gRPC | 开发实验 | 双向 stream | 结构化事件 |
 
-| Export | 源入口 | 用途 |
-|---|---|---|
-| `bin/openclaude` -> `dist/cli.mjs` | `src/entrypoints/cli.tsx` | 交互 CLI、print、管理子命令、remote 等 |
-| `@gitlawb/openclaude/sdk` -> `dist/sdk.mjs` | `src/entrypoints/sdk/index.ts` | Node 进程内 SDK |
+## 2. TUI
 
-`src/entrypoints/mcp.ts` 由 CLI 的 MCP 子命令调用。`src/grpc/` 通过 `scripts/start-grpc.ts` 启动。该入口属于仓库开发脚本。package exports 未公开 gRPC 入口。其接口不具备公开稳定性承诺。
+TUI 提供完整本地交互能力：
 
-## 13.2 CLI Bootstrap
+- 多轮对话。
+- 流式文本和工具进度。
+- 权限确认对话框。
+- 模型、配置和会话选择。
+- Agent 与任务视图。
+- 滚动、搜索和 Fullscreen。
+- 本地交互命令。
 
-`entrypoints/cli.tsx` 先处理低成本 fast path，再动态导入完整 `main.tsx`。主要顺序为：
+TUI 在启动时执行目录信任确认。项目扩展在确认后加载。
 
-```text
---version
-  -> ps/logs/attach/kill
-  -> provider env file / --provider
-  -> enable config + managed env
-  -> skills 管理 fast path
-  -> provider profile + flag settings + agent route
-  -> --background
-  -> credential hydration + provider validation
-  -> startup screen
-  -> MCP/native host/remote-control/daemon 等特殊入口
-  -> main.tsx Commander 完整解析
-```
+## 3. Headless
 
-该顺序满足明确的启动约束。provider 参数必须在认证检查和启动画面前生效。skills 本地管理需要在 provider 配置损坏时保持可用。后台 child 必须继承已经解析的 provider/model 环境。
+Headless 适用于脚本、CI 和批量任务。它不加载 React/Ink 界面，并保留相同的会话与工具流程。
 
-`--version` 不加载完整模块图，背景 session 的本地管理也不需要 API 认证。
+### 3.1 输出形式
 
-## 13.3 交互 TUI 模式
+| 形式 | 内容 |
+|---|---|
+| Text | 最终文本回答 |
+| JSON | 最终结构化结果 |
+| Stream JSON | 模型、工具、Hook 和任务事件流 |
 
-默认入口在 TTY 中渲染 App/REPL：
+诊断信息与机器可解析输出使用不同通道。
 
-- PromptInput 接收文本、paste、图片、slash command。
-- React/AppState 持有对话和权限 UI 状态。
-- MCP、LSP、插件、hooks、settings watcher 在启动期接入。
-- 工具权限可通过 Ink dialog 异步询问。
-- 输出通过普通或 alternate-screen renderer 展示。
+### 3.2 输入形式
 
-这一路径拥有最完整的人机交互能力。任何返回 `local-jsx` 的命令都默认依赖此入口。
+Headless 可以从命令参数、stdin 或双向结构化协议接收输入。双向协议支持运行中消息、权限响应和中止控制。
 
-工作目录信任 gate 在执行项目 hooks、plugins 和 instructions 前完成。交互模式使用独立的信任确认流程。`--print` 由调用者承担目录信任责任。
+### 3.3 权限
 
-## 13.4 Print/Headless 模式
+Headless 没有本地权限对话框。操作需要预设规则、Permission Hook 或外部权限回调。无法获得决定的 Ask 会转为拒绝。
 
-`-p/--print` 调用 `src/cli/print.ts`，不挂载 React tree。它自己创建 AppState、权限回调、settings change subscriber、MCP 和 query 生命周期。
+调用方负责确认工作目录来源。
 
-### 输出格式
+## 4. Bare 模式
 
-| 格式 | 输出行为 | 典型用途 |
-|---|---|---|
-| `text` | 最终文本 | shell 管道 |
-| `json` | 单个结果对象。verbose 可含完整消息 | 一次性机器消费 |
-| `stream-json` | NDJSON 实时事件 | SDK host、远程控制、长任务 |
+Bare 模式减少自动加载能力。它可以跳过 Hook、LSP、插件同步、自动记忆、后台预取和项目指令自动发现。
 
-`stream-json` 要求 `--verbose`。`--include-partial-messages` 可发出增量 assistant chunk。`--include-hook-events` 增加 hook lifecycle event。`--json-schema` 要求最终结构化输出通过指定 schema。
+调用方明确提供的 model、MCP、Agent、Skill、settings 和附加目录继续生效。Bare 适用于受控脚本和诊断场景。
 
-### 输入格式
+## 5. Structured I/O
 
-- `text`：命令行 prompt 或 stdin 文本。
-- `stream-json`：`StructuredIO` 按行解析 SDK user/control message，可连续提交多轮。
+Structured I/O 将会话事件编码为稳定消息格式。主要事件包括：
 
-`--replay-user-messages` 只在 stream-json 双向协议中用于 acknowledgment。stdout 必须保持机器可解析，诊断、startup heartbeat 等应走 stderr 或结构化事件。
+- Session 初始化。
+- Assistant 文本和工具请求。
+- 工具进度和结果。
+- Permission 请求和响应。
+- Hook 事件。
+- Task 通知。
+- 中止和错误。
 
-### Headless 特有限制
+每个控制请求具有相关 ID。调用方可以将响应与原请求对应。
 
-- 必须有 prompt/stdin，除非由 orchestrator 后续注入。
-- 没有 Ink permission dialog。应使用 allow/deny rules、SDK control permission response 或 `--permission-prompt-tool`。
-- `--max-turns`、`--max-budget-usd` 提供非交互终止条件。
-- `--no-session-persistence` 只适用于 print。
-- print 跳过 workspace trust dialog，因此 CLI 文案要求只在可信目录使用。
-- `--heartbeat` 只适用于 print，输出安静时提供 liveness。
+## 6. SDK V1
 
-### Bare 模式
+SDK V1 提供一次查询接口。调用方提交 Prompt 和配置，并通过异步迭代器读取事件。
 
-`--bare` 设置简化模式。该模式跳过 hooks、LSP、插件同步、attribution、auto-memory、后台预取、keychain 和自动 CLAUDE.md 发现。显式 MCP、settings、agents、plugin-dir、add-dir 和 skill 保持可加载状态。
+SDK 支持：
 
-Anthropic 认证在 bare 下只读取显式 API key 或 settings 中的 apiKeyHelper，不读取 OAuth/keychain。第三方 provider 继续使用自己的凭据。
+- System Prompt 追加或替换。
+- Model 和 provider 设置。
+- Agent 和 Skill 注入。
+- MCP Server。
+- Permission callback。
+- Continue、Resume 和 Fork。
+- 工具调用上限和 token 预算。
 
-## 13.5 StructuredIO 与 RemoteIO
+调用方需要持续消费迭代器，并传播中止信号。
 
-`StructuredIO` 把 stdin NDJSON 转成：
+## 7. SDK 会话隔离
 
-- 用户消息。
-- interrupt、permission response、set model/mode 等 control request。
-- MCP elicitation response。
+同一进程可以创建多个 SDK 会话。每个会话具有独立 session ID、工作目录、消息历史和权限回调。
 
-同时负责 control response 的相关 ID、输入回放和错误格式。
+部分 provider 配置通过进程环境传递。系统在修改环境期间使用互斥控制，并在请求结束后恢复原值。大量使用不同环境覆盖的 SDK 请求可能串行执行。
 
-存在 `--sdk-url` 时使用 `RemoteIO`。它在 StructuredIO 之上连接远端 session transport，并维护 internal-event queue、断线恢复和远端确认。业务 query 在本地 headless engine 执行。输入输出由远端控制平面传输。
+## 8. SDK V2 持久会话
 
-Transport 实现包括 WebSocket、SSE 和 hybrid。Hybrid 可根据服务能力或连接状态选择通道，并统一向 `StdoutMessage` 事件模型转换。
+SDK V2 提供可以多次发送消息的 Session 对象。
 
-## 13.6 SDK v1 Query
+主要操作包括：
 
-SDK barrel 禁止导入 React、Ink 或 CLI/TUI 代码。构建过程检查被错误替换成 stub 的关键模块。
+- `sendMessage` 提交新输入。
+- `stream` 读取事件。
+- `interrupt` 中止当前请求。
+- `respondToPermission` 回应权限请求。
+- `close` 释放会话资源。
 
-`query()` 返回同时实现 `AsyncIterable<SDKMessage>` 和控制方法的 `Query`：
+Close 会释放 MCP client、等待中的权限请求、计时器、队列和会话引擎。调用应用需要在结束使用时关闭 Session。
 
-- 迭代时才完成 init、agent 装载、MCP 连接与 resume 解析。
-- prompt 可以是字符串，也可以是异步 SDK user message 流。
-- 支持 interrupt、close、setModel、setPermissionMode、respondToPermission。
-- 可读取当前 messages、MCP status、支持的 agents/commands。
-- 可检查并异步执行 file rewind。
+## 9. Session Management
 
-`queryAsync()` 是需要先完成异步创建的对应形式。具体选择应以公开类型和调用要求为准。
+SDK 可以在不启动模型的情况下执行会话管理：
 
-### SDK 上下文隔离
+- 列出会话。
+- 读取会话信息和消息。
+- 重命名和添加标签。
+- 删除会话。
+- 创建分支。
 
-历史 CLI 代码使用部分全局/模块状态。SDK 用 `runWithSdkContext()` 为当前异步链提供 session ID、cwd 和 transcript dir，并对 process env 覆盖使用全程 mutex：
+Session ID 需要通过格式校验。读取消息时，系统沿 parent UUID 重建当前消息链。修改元数据时，调用方需要避免与正在运行的同一会话并发写入。
 
-1. 获取 mutex。
-2. 保存被覆盖 env。
-3. 执行 query。
-4. `finally` 恢复 env 并释放 mutex。
+## 10. OpenClaude 作为 MCP Server
 
-这防止同进程并发 SDK query 相互覆盖 provider credentials。大量带不同 env override 的 query 会被串行化。SDK session 共享部分进程级资源。
+MCP Server 入口通过 stdio 提供工具列表和工具调用。外部 MCP Client 可以调用 OpenClaude 暴露的工具。
 
-Agent definition 或 MCP 装载失败会产生 SDK failure event 或警告。初始化过程继续加载剩余能力。
+该入口聚焦工具服务。它不提供完整对话历史、终端权限界面和全部本地命令。工具执行继续经过配置和权限检查。
 
-### SDK resume/fork
+## 11. Remote
 
-SDK 解析 `continue`、session ID、fork 和 `resumeSessionAt`：
+Remote 模式将输入、显示事件和权限请求通过远程连接传输。实际 QueryEngine 所在进程负责模型和工具执行。
 
-- continue 查当前 cwd 最新会话。
-- resume 从 JSONL 父链注入历史。
-- fork 先生成新会话，再注入新文件的历史。
-- 最终用解析出的 transcript dir 和 session ID 切换写入目标。
+远程执行端拥有自己的文件系统、MCP 连接和权限状态。查看端只展示远端已经产生的事件，不会重复执行工具。
 
-它复用 compact-aware transcript loader，不能把 JSONL 简单读成数组后全部注入。
+连接断开后，系统显示重连状态。重连超过限制时进入正常关闭流程。
 
-## 13.7 SDK V2 持久会话
+## 12. SSH
 
-V2 API 当前带 `unstable_` 前缀：
+SSH 入口在远端主机启动 OpenClaude，并建立输入输出转发。远端环境负责文件、Shell、模型凭据和工具执行。
 
-```text
-unstable_v2_createSession(options)
-unstable_v2_resumeSession(sessionId, options)
-unstable_v2_prompt(message, options)
-```
+本地端负责终端交互和连接管理。认证、远端命令和 socket 位置受到独立检查。
 
-`SDKSession` 持有一个长期 QueryEngine，可多次 `sendMessage()`。`interrupt()` 只中止当前 query。`close()` 还释放 MCP client、permission pending map、timeout/failure queues 和 engine 引用。
+## 13. Background CLI
 
-长生命周期 host 必须在 `finally` 调用 `close()`。缺少 `close()` 会使 abandoned session 保留 buffer 和 pending callbacks。
+Background CLI 创建独立 Headless 子进程，并将进程 ID、session ID、命令和日志位置写入注册表。
 
-V2 权限是 secure-by-default：没有 `canUseTool` 或 `onPermissionRequest` 时，不能假定工具会自动允许。外部 permission request 默认有约 30 秒响应窗口。host 用 tool-use ID 调用 `respondToPermission()`。
+用户可以：
 
-`unstable_v2_prompt()` 是一次性封装，内部创建 session、收集 result，并在 `finally` 自动 close。
+- 查看后台会话。
+- 读取日志。
+- Attach 到运行会话。
+- 停止进程。
 
-### SDK 内嵌 MCP
+后台进程保留独立生命周期。父 Shell 退出不会直接结束它。
 
-`tool()` 构造 in-process MCP tool definition。`createSdkMcpServer()` 只给配置加 `scope: session`，本身不启动 server。session 迭代开始后才按 stdio/SSE/HTTP/sdk 类型连接并把工具合并进 pool。
+## 14. gRPC
 
-## 13.8 Session Management SDK
+gRPC 入口用于开发实验。它提供双向 Chat stream 和内存会话。
 
-SDK 还提供不启动模型的轻量操作：
+当前实现使用明文连接和有限访问控制。公网生产部署需要增加 TLS、认证、授权、限流、持久会话、审计和多租户隔离。
 
-- `listSessions()`、`getSessionInfo()`。
-- `getSessionMessages()`。
-- `renameSession()`、`tagSession()`、`deleteSession()`。
-- `forkSession()`。
+## 15. 能力矩阵
 
-所有传入 session ID 先校验 UUID。列表和 info 使用轻量头尾读取。messages 沿 parent UUID 选择活动链并排除 sidechain。Mutation 直接写 JSONL 元数据，因此调用者需要处理与正在运行会话的并发写入。
-
-## 13.9 MCP Server 入口
-
-`startMCPServer(cwd, debug, verbose)` 让 OpenClaude 自身成为 stdio MCP server，只暴露 `tools/list` 与 `tools/call`。
-
-能力来源为内建工具加当前配置的外部 MCP tools。若重名，外部 MCP tool 优先，内建项被去重。输出 schema 只有根为 object 时才暴露，避免 MCP SDK 不接受 union 根。
-
-调用路径比 REPL 更薄：
-
-1. 查找且检查 tool enabled。
-2. Zod 解析 input。
-3. 运行 tool 自身 `validateInput()`。
-4. 直接调用 `tool.call()`，传入非交互 context 和权限 helper。
-5. 映射 text/image/error 到 MCP result。
-
-该入口不提供对话历史、Ink 权限 UI、完整 slash command 或 agent definitions。入口仅保留 review command。其 Hook 和 UI 行为范围以当前调用路径为准。
-
-## 13.10 Remote、Assistant 与 SSH
-
-仓库存在三类远程概念：
-
-| 模式 | 执行位置 | 本地 TUI 的角色 |
-|---|---|---|
-| `remote-control` bridge | 本机执行工具 | 向移动端/web 暴露会话并转发事件 |
-| `assistant [sessionId]` | bridge session 已存在 | 作为客户端附着、查看/输入 |
-| remote session | 远端 agent 执行 | 本地显示服务端消息，不重复执行工具 |
-| SSH mode | SSH 目标执行 CLI/agent | 本地转发流，断线有限重连 |
-
-Remote Control 启动前检查登录、版本、feature gate 和组织策略。Bridge 输入的 slash command 还经过第 11 章的远程安全过滤。
-
-`useRemoteSession` 收到远端已经生成的 assistant/tool 状态时，仅更新本地显示。本地重新执行工具会造成双重副作用。SSH 断线会显示重连状态。达到最大次数后进入 graceful shutdown。
-
-远程模式共享显示协议。各执行端保有独立的 filesystem、MCP 和 permission context。工具执行位置由该模式的 transport 和 QueryEngine 所在进程决定。
-
-## 13.11 后台 CLI 会话
-
-`--bg/--background` 派生新的 `--print` child，将进程身份、session ID、命令和日志位置写入 registry。`ps/logs/attach/kill` 走轻量 fast path。
-
-kill 前会重新验证 PID 和进程身份。系统先发送 SIGTERM，再按平台和存活状态升级。该验证防止 PID 复用导致误杀进程。后台 agent/task 与主会话内的 in-process subagent 使用独立机制，详见第 8 章。
-
-## 13.12 gRPC 开发适配器
-
-`src/grpc/server.ts` 提供双向 `AgentService.Chat`：client 发送 request、permission input 或 cancel。server 发送 text chunk、tool start/result、action required、done/error。
-
-实现特征：
-
-- 每条 stream 同时只允许一个 request。
-- 每个 request 创建 QueryEngine，并注册 built-in agents。
-- 工具使用前发 `action_required`，客户端以 prompt ID 回答 yes/no。
-- cancel 中断 engine 并结束 stream。
-- session history 仅保存在 server 进程的 `Map`，最多 1,000 个，按插入顺序淘汰。
-- server 使用 `createInsecure()`，默认只适合 localhost 开发。
-
-该实现缺少生产级持久化、认证、TLS、多租户隔离、权限超时和分布式 session store。`scripts/start-grpc.ts` 还包含开发用 MACRO polyfill。准确的项目表述是“仓库包含 QueryEngine 的 gRPC 原型适配器”。
-
-## 13.13 入口能力矩阵
-
-| 能力 | TUI | Print | SDK | MCP server | gRPC 原型 |
+| 能力 | TUI | Headless | SDK | MCP Server | Remote |
 |---|---:|---:|---:|---:|---:|
-| 多轮 | 是 | stream-json 可多轮 | 是 | 否 | 是 |
-| Ink UI | 是 | 否 | 否 | 否 | 否 |
-| 人工权限 | dialog | control/tool | callback/event | host 决定 | action_required |
-| 会话 JSONL | 是 | 可选 | 是 | 否 | 仅内存 Map |
-| MCP client | 是 | 是 | 可配置 | 可转暴露 | 当前无 |
-| Plugin/LSP | 完整 | 依模式 | 非 TUI 子集 | 否/有限 | 否 |
-| 公开稳定性 | CLI | CLI | v1 公开、V2 unstable | CLI 子入口 | 开发脚本 |
+| 多轮会话 | 是 | 取决于协议 | 是 | 否 | 是 |
+| 流式事件 | 是 | 是 | 是 | 工具级 | 是 |
+| 本地权限界面 | 是 | 否 | 否 | 否 | 远程桥接 |
+| Session 恢复 | 是 | 是 | 是 | 否 | 是 |
+| Local Interactive Command | 是 | 否 | 否 | 否 | 否 |
+| MCP Client | 是 | 是 | 是 | 当前范围有限 | 取决于执行端 |
+| Agent 定义 | 是 | 是 | 是 | 当前范围有限 | 取决于执行端 |
+| 工具执行 | 本地 | 本地 | SDK 进程 | Server 进程 | 执行端进程 |
 
-下一章按照攻击面审视信任、权限、进程、网络和数据边界。
+## 16. 入口选择
+
+- 日常开发使用 TUI。
+- 脚本和 CI 使用 Headless。
+- 应用内嵌使用 SDK。
+- 向 MCP Client 提供工具使用 MCP Server。
+- 远程操作现有环境使用 Remote 或 SSH。
+- 长时间无人值守任务使用 Background CLI。
+- gRPC 仅用于开发验证。
+
+下一章说明所有入口共用的安全检查和残余风险。

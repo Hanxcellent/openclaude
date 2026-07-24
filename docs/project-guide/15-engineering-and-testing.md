@@ -1,6 +1,6 @@
-# 15. 工程质量、构建与测试方法
+# 15. 附录：工程质量与验证
 
-本项目的主要工程难点是跨入口和 provider 保持 Agent 语义一致。相关入口包括交互 CLI、headless、SDK、MCP 和远程会话。验证策略同时覆盖类型、构建产物、状态机、协议兼容和安全不变量。
+本附录面向需要验证实现或参与开发的读者。主报告不依赖本章内容。交互 CLI、Headless、SDK、MCP 和远程会话共用会话与工具能力，工程验证覆盖消息顺序、工具结果、终止状态、构建产物、provider 协议和安全规则。
 
 ## 15.1 开发与发布运行时
 
@@ -37,17 +37,17 @@
 1. 发布产物的功能集合由构建结果决定。
 2. 修改 feature 名或调用形态时，必须同时考虑预处理正则和 source guard tests。
 
-### Stub 与 open build
+### 替代模块与公开构建版本
 
-部分上游内部模块、原生 addon 或未镜像模块由 build plugin 提供 stub。构建会记录 stub marker。测试会检查允许范围，并识别被静默替换的缺失 import。
+部分上游内部模块、原生 addon 或未镜像模块由 build plugin 提供功能不完整的替代模块。构建会记录对应 marker。测试会检查允许范围，并识别被替代的缺失 import。
 
-这是一种发行兼容策略。stub 不提供完整功能。调用 stub 的 live path 应明确返回“unavailable”错误。空成功结果会掩盖缺失能力。
+这种处理用于完成公开版本构建。替代模块不提供完整功能。程序实际调用替代模块时必须返回“unavailable”错误。返回空成功结果会掩盖缺失能力。
 
 ### CLI 保留标识符的原因
 
-CLI 只做 whitespace/syntax minify，不做 identifier mangling，因为错误处理和工具执行存在 `constructor.name` 等兼容判断。SDK 保持未压缩，以便构建后做 import leak 检查。这个细节说明 minification 配置也是运行语义的一部分。
+CLI 只压缩空白和语法，不重命名 identifier。错误处理和工具执行会读取 `constructor.name`，因此重命名可能改变程序行为。SDK 保持未压缩，便于构建后检查意外导入。
 
-## 15.3 类型边界
+## 15.3 类型检查范围
 
 普通类型检查：
 
@@ -71,17 +71,17 @@ bun run typecheck:type-tests
 
 | 层级 | 典型对象 | 主要断言 |
 |---|---|---|
-| 纯函数 | path、redaction、token、provider mapping | 输入输出、边界值、跨平台 |
+| 纯函数 | path、redaction、token、provider mapping | 输入输出、临界值、跨平台 |
 | 状态机 | QueryEngine、task、permission、retry | 状态迁移、次数上限、中止 |
 | React/Ink | dialog、picker、status、input | 渲染文本、按键、callback |
 | 协议 | provider、MCP、SDK、bridge | request shape、stream event、tool pair |
 | 文件/进程 | settings、JSONL、plugin、Bash | 临时目录、锁、退出码、清理 |
 | 构建守卫 | scripts 下 tests | stub、feature、externals、隐私 |
-| 回归/安全 | `src/__tests__` 与专项 tests | 已知漏洞和历史 bug 不变量 |
+| 回归/安全 | `src/__tests__` 与专项 tests | 已知漏洞修复和历史 bug 防复发规则 |
 
 ### full test 的并发限制
 
-`bun run test:full` 使用 `--max-concurrency=1`。大量测试会修改 `process.env`、cwd、全局 config cache、bootstrap state、mock transport 和临时 credential store。串行模式降低跨文件全局状态干扰，并与 CI 保持一致。
+`bun run test:full` 使用 `--max-concurrency=1`。大量测试会修改 `process.env`、cwd、全局 config cache、bootstrap state、模拟 API 连接和临时 credential store。串行模式降低跨文件全局状态干扰，并与 CI 保持一致。
 
 focused test 可以并发提供快速反馈。涉及全局状态的改动还应运行对应 suite 的串行组合。
 
@@ -97,7 +97,7 @@ focused test 可以并发提供快速反馈。涉及全局状态的改动还应�
 | `bun run test:full` | 单并发全量测试 | 合并前行为验证 |
 | `bun run deadcode` | knip 文件/依赖检查 | 模块、依赖、入口变化 |
 | `bun run check` | smoke + deadcode + full tests | 通用合并门禁 |
-| `bun run test:provider` | API provider 与 context 专项 | provider/transport 变化 |
+| `bun run test:provider` | API provider 与 context 专项 | provider 请求或响应适配变化 |
 | `bun run test:provider-recommendation` | profile/recommendation 专项 | provider 选择变化 |
 | `bun run security:pr-scan` | 检查 PR 意图和敏感改动模式 | 权限、安全、发布前 |
 | `bun run verify:privacy` | 检查 build 中不存在非预期 phone-home | analytics/network/build 变化 |
@@ -139,7 +139,7 @@ bun run typecheck
 
 ### 修改 provider
 
-先确认该变化属于公共语义、Anthropic transport 还是 OpenAI-compatible adapter。运行：
+先确认该变化位于共享消息处理、Anthropic API 适配器或 OpenAI-compatible 适配器。运行：
 
 ```bash
 bun run test:provider
@@ -192,7 +192,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 
 ## 15.8 测试 Agent 状态机的方法
 
-状态机测试应围绕可观察 transition：
+状态机测试应覆盖可观察的状态变化：
 
 ```text
 给定：消息历史、provider stream、permission mode、AbortSignal
@@ -200,7 +200,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 则：产出消息序列、任务状态、持久化记录和最终停止原因
 ```
 
-关键不变量包括：
+测试必须检查以下规则：
 
 1. 每个 `tool_use` 在成功、拒绝和中止路径中都恰有一个匹配 ID 的 `tool_result`。
 2. Abort 不应被 retry 捕获并重新请求。
@@ -238,14 +238,14 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 1. 确认 active provider profile、model、base URL 和 key 来源。
 2. 同时检查统一错误分类和 provider 原文。
 3. 对照 request adapter 对 system、tools 和 thinking 字段的剥离与转换行为。
-4. 区分 API retry 与 query transition。确认当前 compact/fallback 状态。
+4. 区分相同请求的 API retry 和改变参数后的 query 重启。确认当前 compact/fallback 状态。
 5. 使用 `bun run dev:profile` 或明确 `--provider` 复现。
 
 ### 工具卡住
 
 1. 判断等待的是 permission、Hook、tool process 还是 task notification。
 2. 检查 AbortSignal 沿 query → runTools → tool.call 的传播链。
-3. 检查进程 stdout/stderr drain 与 timeout。
+3. 检查程序持续读取 stdout/stderr，并设置 timeout。
 4. MCP 工具检查 server connection state。background agent 检查 task registry。
 5. 确认 tool_result 已生成。缺失结果可能使下一轮 provider 拒绝消息历史。
 
@@ -255,7 +255,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 2. 检查 selector 的订阅字段和原地修改产生的通知缺失。
 3. 检查消息 UUID/key 的稳定性。
 4. 区分 transient progress 与持久 message。
-5. 对 resume 场景检查 JSONL 与内存 projection 的一致性。
+5. 对 resume 场景检查 JSONL 日志与内存中重建消息列表的一致性。
 
 ## 15.11 性能观察点
 
@@ -267,7 +267,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 - microcompact、context collapse 和外置大型 tool result。
 - React selector 与 virtual message list，避免 stream 每个 delta 全树重渲染。
 - 并发只读 tools 与后台 agent，不阻塞前台输入。
-- SDK bundle dependency graph，避免将整个 TUI 带入宿主。
+- SDK bundle dependency graph，避免调用 SDK 的应用同时加载整个 TUI。
 
 优化前先定义指标：首屏时间、首 token、turn 总耗时、cache read/write、峰值 RSS、render FPS、工具排队时间。只看单个函数 microbenchmark 容易忽略 provider 和终端 I/O 的主导成本。
 
@@ -281,7 +281,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 4. PR 描述写明影响、关联 issue、精确命令、provider 路径和 UI 截图。
 5. 处理 CodeRabbit 和 maintainer 反馈后再请求复审。
 
-评审重点包括有限失败模式、跨入口语义一致性、第三方 provider 兼容性、全局状态恢复，以及构建期不可用功能的 live path 隔离。
+评审重点包括重试和循环的次数限制、各入口的消息处理一致性、第三方 provider 兼容性、全局状态恢复，以及关闭功能的代码不会进入实际执行流程。
 
 ## 15.13 源码定位
 

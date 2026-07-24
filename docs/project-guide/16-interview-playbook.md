@@ -1,280 +1,237 @@
-# 16. 简历与面试讲解稿
+# 16. 附录：架构场景串联
 
-本章用于把源码理解转化为准确的项目表达。“项目采用”和“源码实现”适用于已经确认的架构。“我设计”和“我实现”适用于本人参与设计、编码、测试或评审的部分。面试官通常会沿个人贡献继续追问提交、取舍和故障。虚构 ownership 容易被识别。
+本附录通过典型使用场景说明多个模块的协作关系。每个场景描述触发条件、参与模块、状态变化和最终结果。
 
-## 16.1 一句话定义
+## 16.1 普通问答
 
-OpenClaude 是一个 TypeScript 实现的终端 Code Agent：它把多供应商 LLM 的流式输出统一成内部消息协议，在受权限、Hook 和可选 OS sandbox 约束的循环中执行文件、Shell、MCP 与子 Agent 工具，并用 React/Ink TUI、JSONL event log 和 SDK/远程入口暴露同一套核心能力。
+### 场景
 
-这句话包含五个可继续展开的维度：协议适配、Agent loop、工具安全、状态与持久化、多入口复用。
+用户提交一个不需要工具的代码解释请求。
 
-## 16.2 30 秒版本
+### 流程
 
-> OpenClaude 是一个多模型 Code Agent CLI。核心运行时维护可中断的流式循环。循环依次构造上下文、请求模型、解析 tool use、执行安全检查、运行工具和回填 tool result。项目还处理多 provider 协议差异、上下文压缩、子 Agent/后台任务、MCP/插件扩展、React/Ink 状态同步和 JSONL 会话恢复。安全层把模型和项目内容视为不可信输入，并采用 workspace trust、来源感知设置、最小权限和可选 OS sandbox 进行分层约束。
+1. 终端交互模块接收文本。
+2. 会话编排模块创建用户消息。
+3. 上下文模块加入系统规则、项目指令和历史消息。
+4. 模型接入模块选择当前 model 并发送请求。
+5. 流式文本持续返回终端。
+6. 模型正常结束。
+7. 持久化模块保存用户消息和 Assistant 回答。
 
-## 16.3 3 分钟架构版本
+### 参与模块
 
-可以按五层说明：
+| 模块 | 作用 |
+|---|---|
+| 交互 | 输入和流式展示 |
+| 会话编排 | 推进请求并判断结束 |
+| 上下文 | 准备模型输入 |
+| 模型接入 | 转换请求和响应 |
+| 持久化 | 保存消息链 |
 
-1. **入口层**：`bin/openclaude` 最终由 Node 加载 bundle。Commander 根据参数进入 TUI、print/headless、MCP server、remote/SSH 等路径，SDK 是独立无 Ink bundle。
-2. **交互与状态层**：React/Ink 管理终端交互，`AppStateStore` 保存可订阅业务状态。`QueryGuard` 保证主查询所有权。bootstrap state 保存启动后稳定的 session/cwd 等数据。
-3. **Agent 执行层**：`query()` 是异步生成器。它发送模型请求并 yield 流事件。若 assistant 返回 tool use，`runTools()` 并发或串行执行，生成 tool result 后再次进入 query loop。Abort、retry、compact 和 fallback 都是显式状态迁移。
-4. **能力层**：内置工具、MCP 工具、skills、plugins、Hooks 和 LSP 最终汇入统一工具/命令边界。子 Agent 复用 query loop。每个子 Agent 拥有独立上下文、模型路由、permission context 和 task 生命周期。
-5. **基础设施层**：provider adapter 将 Anthropic、OpenAI-compatible、Gemini/Vertex、Bedrock 等请求和 stream 归一化。JSONL 以 UUID/parent UUID 保存事件链。安全层处理 trust、规则、路径、sandbox、SSRF、凭据和脱敏。
+## 16.2 修改文件
 
-最后补充设计结论。项目通过消息协议、异步 iterator、store 和 adapter 划分共享核心与入口差异。不同生命周期的状态由对应存储管理。各入口复用统一 Agent loop。
+### 场景
 
-## 16.4 10 分钟源码走读
+用户要求修改项目中的配置文件。
 
-### 第一步：启动
+### 流程
 
-从 `bin/openclaude`、`src/entrypoints/cli.tsx`、`src/entrypoints/init.ts`、`src/main.tsx` 开始：
+1. 模型先请求读取目标文件。
+2. 工具模块校验路径和读取权限。
+3. 文件内容作为工具结果返回模型。
+4. 模型生成编辑请求。
+5. 工具模块检查目标文件、修改内容和已读取版本。
+6. Permission 和 Hook 给出执行决定。
+7. 文件工具应用修改，并保存文件历史快照。
+8. 修改结果返回模型。
+9. 模型检查结果并给出最终说明。
+10. 会话日志保存工具请求、结果和最终回答。
 
-- launcher 确认 Node runtime 并加载 `dist/cli.mjs`。
-- CLI 解析参数，标记交互/非交互状态。
-- `init()` 加载配置，只应用 trust 前安全环境，初始化清理、网络和预取。
-- `main.tsx` 决定执行 TUI、print 或子命令。
-- 交互路径先确认目录 trust，再应用完整项目环境和启动扩展。
+### 关键设计
 
-### 第二步：一次输入
+- 读取和写入分别授权。
+- 用户路径和真实路径同时检查。
+- 编辑基于已经读取的文件版本。
+- 工具请求和工具结果使用调用 ID 配对。
+- 文件历史和对话历史分别保存。
 
-从 `src/components/PromptInput/PromptInput.tsx`、`src/utils/processUserInput/`、REPL 路径进入：
+## 16.3 Shell 命令执行
 
-- Enter 产生 submit。query 运行期间的输入按队列策略转换为 steer 或 follow-up。主会话始终保持单个执行循环。
-- 输入解析区分普通 prompt、slash command、`!` shell、附件和本地 command。
-- UI 取得 QueryGuard 所有权，建立 AbortController 并调用 query generator。
+### 场景
 
-### 第三步：模型循环
+模型需要运行构建或测试命令。
 
-沿 `src/query.ts`、`src/QueryEngine.ts`、`src/services/api/claude.ts`：
+### 流程
 
-- system prompt、tools、messages、model 参数被组装。
-- provider profile 决定 transport。adapter 归一化请求。
-- stream delta 转成内部 assistant message/progress。
-- stop reason 是 tool use 时进入工具阶段。普通 end turn 则执行 Stop hooks 并结束。
-- context overflow、max tokens、rate limit 分别触发 compact、续写或 provider fallback，且都有次数上限。
+1. 模型提交 Shell 工具请求。
+2. Shell 安全模块解析命令、参数、管道和重定向。
+3. Permission 根据命令和工作目录匹配规则。
+4. 用户完成必要确认。
+5. Sandbox 设置文件和网络访问范围。
+6. 子进程启动并持续返回 stdout、stderr 和状态。
+7. 用户中止时，中止信号传给子进程。
+8. 最终退出状态和输出返回模型。
 
-### 第四步：工具
+### 模块分工
 
-沿 `src/tools.ts`、`src/Tool.ts`、`src/hooks/useCanUseTool.tsx` 和 `src/utils/permissions/`：
+Permission 决定应用批准的命令。Sandbox 限制进程可访问的资源。任务模块管理长时间运行的进程。终端模块展示进度和输出。
 
-- 工具池由内置工具、动态 MCP、SDK 和 feature gate 合成。
-- input schema 先阻止格式错误。
-- PreToolUse Hook、permission rule、路径/命令 safety 和用户审批共同决定执行权限。
-- 只读安全工具可并发。有副作用或不声明并发安全的工具按调度约束运行。
-- 成功、错误、拒绝和 abort 都转成匹配 tool use ID 的 result。
+## 16.4 上下文容量不足
 
-### 第五步：状态与落盘
+### 场景
 
-沿 `src/state/`、`src/utils/log.ts`、`src/utils/sessionStorage.ts`：
+长会话和大型工具结果使模型输入超过上下文窗口。
 
-- stream progress 先更新 UI，不等同于完整持久消息。
-- 完成消息带 UUID、parent UUID、session ID 和时间信息写入 JSONL。
-- resume 读取事件，并按 parent chain 重建指定叶子分支。
-- 大工具结果可外置，transcript 留稳定引用，以降低内存和 JSONL 体积。
+### 流程
 
-这个走读应始终强调不变量、状态迁移和文件职责。
+1. 上下文模块估算输入 token。
+2. 系统提交已经准备的局部缩减。
+3. 容量继续不足时，自动压缩较早历史。
+4. 摘要保留任务目标、关键决定、文件状态和未完成事项。
+5. 持久化模块记录摘要和压缩位置。
+6. 当前请求使用摘要和近期消息重新发送。
+7. 连续压缩失败达到限制时，系统暂停自动压缩并返回错误。
 
-## 16.5 一轮执行的白板图
+### 数据结果
 
-```text
-User input
-  -> input parser / slash command dispatch
-  -> QueryGuard + AbortController
-  -> context + system prompt + visible tools
-  -> provider adapter -> streaming API
-  -> assistant blocks
-       ├─ text/end_turn -> Stop hooks -> persist -> idle
-       ├─ tool_use -> validate -> hook -> permission -> sandbox -> tool.call
-       │              -> tool_result -> persist -> next model step
-       └─ error -> retry / compact / lower cap / fallback / terminal error
-  -> AppState/UI/SDK consumer receives the same normalized messages
-```
+模型上下文变短。完整会话日志保持不变。Resume 可以根据压缩记录重建相同上下文。
 
-面试官若打断，可从任意箭头展开相应章节。
+## 16.5 后台 Agent
 
-## 16.6 最值得讲的设计点
+### 场景
 
-### 1. 统一消息语义并保留供应商差异
+用户将独立调查任务交给后台 Agent，并继续主会话工作。
 
-不同 provider 对 system、tool calling、thinking、usage、stream event 和 token limit 的支持不同。项目在 adapter 层处理差异，再归一化为内部 `Message`/content block。query loop 由此可以复用。adapter 根据供应商能力执行降级。
+### 流程
 
-成本：兼容 provider 的非标准行为会集中到较大的 transport 模块。该模块需要细分的分类测试。
+1. 会话编排模块创建后台 Agent 请求。
+2. 任务模块注册 Task 并返回 Task ID。
+3. Agent 模块创建独立上下文和消息历史。
+4. 后台 Agent 使用自己的 model 和工具执行任务。
+5. 进度和输出写入任务记录。
+6. 主会话继续接收用户输入。
+7. 后台 Agent 完成后生成结构化通知。
+8. 通知进入主会话命令队列。
+9. 主会话在当前步骤结束后处理通知。
 
-### 2. Async generator 连接 stream 和状态消费者
+### 状态关系
 
-query 通过异步生成器逐步 yield assistant delta、tool progress、retry 信息和最终消息。TUI、headless 和 SDK 可以按自身方式消费同一执行流。AbortSignal 可以沿调用链向下传播。
+主请求状态和后台任务状态分别管理。主请求取消不会自动停止后台任务。用户可以通过 Task 操作明确停止 Agent。
 
-成本：iterator 关闭、partial state、异常恢复和 tool pair repair 需要额外状态管理。
+## 16.6 并行修改与 Worktree
 
-### 3. 权限是来源感知的多阶段决策
+### 场景
 
-workspace trust 防项目配置提前执行。permission rule 控制具体能力。文件/Bash safety 做确定性检查。OS sandbox 限制实际进程。deny、policy 和危险路径优先级高于普通自动批准。
+两个 Agent 同时修改不同功能。
 
-成本：规则来源、模式和 UI 需要提供完整解释信息。
+### 流程
 
-### 4. 子 Agent 复用核心循环并隔离局部状态
+1. 每个 Agent 创建独立 worktree。
+2. Agent 的工作目录切换到对应 worktree。
+3. 文件与 Shell 工具只操作该目录。
+4. 两个 Agent 独立保存会话和任务状态。
+5. Agent 完成后，系统检查 worktree 变化。
+6. 无变化的 worktree 可以移除。
+7. 有变化的 worktree 保留，并返回目录和分支信息。
 
-subagent 可以在进程内复用 query。它拥有独立 prompt、tools、model、abort 和 task record。foreground/background 转换通过 task signal 协调。worktree 用于需要 Git 文件隔离的场景。
+Worktree 隔离文件修改。Conversation branch 隔离消息历史。两项功能可以分别使用。
 
-约束：实现必须防止全局 env、config 和 cache 交叉污染。
+## 16.7 MCP 工具
 
-### 5. JSONL 是 append event log
+### 场景
 
-消息以 JSONL 事件增量追加。UUID/parent UUID 支持 resume、分支、compact boundary 和中断恢复。追加写减少每轮重写成本。
+模型调用外部 MCP Server 提供的数据库查询工具。
 
-成本：读取过程需要完成 projection、父链重建、损坏行容错和大结果外置。
+### 流程
 
-## 16.7 高频架构追问
+1. 扩展模块连接 MCP Server。
+2. 能力发现返回工具列表和输入格式。
+3. 工具以 Server 命名空间加入当前工具池。
+4. 模型提交 MCP 工具请求。
+5. 普通工具流程执行 Schema、Hook 和 Permission 检查。
+6. MCP Client 将请求发送到外部 Server。
+7. 结果转换为内部工具结果。
+8. 大型或二进制结果进入会话存储。
+9. 会话编排模块将结果返回模型。
 
-### Q1：AsyncGenerator 与显式状态迁移的作用
+### 安全关系
 
-核心控制结构是循环。产品级实现还需处理 stream partial event、工具并发、权限异步等待、中止、重试、压缩、后台通知和多消费者。`async generator + explicit transitions` 使这些中间状态可观察和可测试。
+MCP Server 来源需要信任。MCP 工具使用独立权限。Server 返回内容按外部输入处理。OAuth token 使用安全存储。
 
-### Q2：Agent loop 的终止条件
+## 16.8 会话恢复和分支
 
-终止条件包括无 tool use 的正常 stop、turn/step/token 限制、用户 abort、不可恢复 API error、工具失败保护和 Hook 明确终止。Stop hooks 可以反馈并阻止一次普通结束。失败路径受循环保护。
+### 场景
 
-### Q3：tool result 的顺序保证
+用户恢复历史会话，并从中间消息创建新的探索分支。
 
-每个 call/result 通过 tool use ID 配对。调度层收集并发结果，并按 provider 可接受的消息结构回填。中断时也会生成拒绝或中止 result，以修复未闭合 pair。
+### 恢复流程
 
-### Q4：schema 与 permission 的独立职责
+1. 持久化模块读取有效 JSONL 事件。
+2. 用户选择目标末端消息。
+3. 系统沿 parent UUID 重建当前消息链。
+4. 压缩、内容替换和大型结果引用重新应用。
+5. 模型、工作目录和会话元数据恢复。
 
-Schema 校验参数结构。permission 校验操作授权。`FileRead({path:'/etc/passwd'})` 可以通过 schema 校验，并因权限范围被拒绝。两项检查分别承担独立职责。
+### 分支流程
 
-### Q5：重复失败工具调用的处理
+1. 用户选择历史消息作为分支点。
+2. 系统创建新 session ID。
+3. 当前有效父链复制到新会话。
+4. 新输入从分支点继续增长。
+5. 原会话保持不变。
 
-失败签名按工具和输入归一化跟踪。相同或相似失败连续出现时注入警告或终止，避免 token 和外部副作用无限消耗。普通 retry 不应覆盖 deterministic tool failure。
+文件系统默认共享。需要文件隔离时，用户另行创建 worktree。
 
-### Q6：auto compact 的信息保留规则
+## 16.9 远程会话
 
-compact 需要保留任务目标、关键决策、文件状态和未闭合 tool pair。该过程生成结构化摘要并记录 boundary。prompt projection 随之缩小。transcript 保持可审计和可恢复。
+### 场景
 
-### Q7：context overflow 与 max output tokens 的分类
+用户在本地终端控制远端环境中的 OpenClaude。
 
-context overflow 表示输入加预期输出超出 context。该错误需要压缩或减少历史。max output tokens 表示请求已被接受，并在回答达到上限后截断。该错误可以通过降低 cap、提高默认 cap 或注入 continuation 处理。两类错误混用会导致无效重试。
+### 流程
 
-### Q8：多 provider 的主要难点
+1. 本地端建立经过认证的远程连接。
+2. 输入和控制消息发送到远端执行端。
+3. 远端会话编排模块调用模型和工具。
+4. 远端文件系统承受实际修改。
+5. 流式文本、工具进度和权限请求返回本地端。
+6. 本地端只展示事件，并返回用户决定。
+7. 断线后连接进入重试或关闭流程。
 
-主要难点来自消息角色、system 表达、tool schema/call/result、thinking block、stream framing、usage 和错误语义的差异。项目用 descriptor/profile 管理配置，用 transport adapter 完成协议转换，并用统一错误分类驱动上层恢复。
+执行位置决定文件、MCP、凭据和 Permission 状态。查看端不会重复执行工具。
 
-### Q9：AppState、bootstrap state 与 QueryGuard 的分工
+## 16.10 SDK 内嵌
 
-生命周期不同。AppState 是可订阅 UI/业务状态。bootstrap state 是进程启动后稳定且非 React 的 session/cwd 数据。QueryGuard 是并发所有权协议。塞进一个 store 会模糊写入时机和责任。
+### 场景
 
-### Q10：运行中输入的处理
+应用通过 SDK 创建持久会话，并自行处理权限请求。
 
-运行中输入进入统一 command queue。系统根据类型将其作为 steer、follow-up 或本地控制命令处理。队列与 QueryGuard 共同保持单主循环语义。
+### 流程
 
-### Q11：ESC 的取消优先级
+1. 应用创建 SDK Session。
+2. 应用提交 Prompt 并消费异步事件。
+3. SDK 使用独立 session ID、工作目录和消息历史。
+4. 工具需要确认时，SDK 向应用发出 Permission 请求。
+5. 应用返回允许或拒绝结果。
+6. 应用可以中止当前请求并继续使用 Session。
+7. 使用结束后，应用关闭 Session。
 
-它按优先级取消 modal、输入子模式、permission、前台 query 或任务。最内层未消费事件时，事件才向外传播。该顺序防止关闭搜索框的操作误杀模型请求。
+应用负责凭据、环境变量、权限回调、输出位置和资源关闭。
 
-### Q12：后台 Agent 的主会话通知
+## 16.11 模块协作总表
 
-启动时注册 task 并立即向父工具返回 task ID。后台 iterator 独立消费。完成后写 output、更新 task status，并将结构化 task notification 放入主 command queue，下一安全点并入上下文。
+| 场景 | 主模块 | 协作模块 |
+|---|---|---|
+| 普通问答 | 会话编排 | 上下文、模型、交互、持久化 |
+| 文件修改 | 工具 | Permission、文件历史、会话编排 |
+| Shell | 工具 | Permission、Sandbox、任务、交互 |
+| 上下文溢出 | 上下文 | 模型、持久化、错误恢复 |
+| 后台 Agent | Agent 与任务 | 命令队列、持久化、交互 |
+| MCP 工具 | 扩展 | 工具、Permission、模型 |
+| 会话恢复 | 持久化 | 状态、上下文、入口 |
+| Remote | 入口 | 会话编排、权限、交互 |
+| SDK | 入口 | 会话编排、工具、资源管理 |
 
-### Q13：worktree 与 conversation branch 的作用范围
+## 16.12 架构总结
 
-worktree 是 Git 文件系统隔离，给并行 Agent 独立工作目录。conversation branch 是 JSONL 消息父链的新叶子，不创建 Git branch，也不隔离文件修改。
-
-### Q14：MCP 接入流程
-
-配置解析并建立 stdio/SSE/HTTP transport，完成 initialize 和 capability discovery，将远端 tool 包装为本地 Tool 接口。连接状态、OAuth、resource 和 elicitation 由 MCP service 管理。执行进入统一 schema/permission/result 流程。
-
-### Q15：Plugin、Skill、Command 与 MCP 的职责
-
-Plugin 是能力包和分发单元，可以贡献 commands、agents、skills、hooks、MCP/LSP 配置。Skill 是按需加载的指令和资源。Command 是用户输入触发的操作描述。MCP 是外部进程或服务协议。四者使用独立抽象，并可组合使用。
-
-### Q16：sandbox 的默认覆盖范围
-
-Sandbox 是可选 OS 约束，主要包装 shell 进程。未启用时由 permission 和应用层路径检查提供限制。依赖不可用时默认可能警告后降级。`failIfUnavailable` 会把该情况转换为硬失败。
-
-### Q17：恶意仓库防护
-
-交互模式先执行 workspace trust。项目级危险 env、Hooks、MCP 和 command 在确认后执行。具体 permission 和 sandbox 在确认后生效。headless/bypass 将信任责任交给调用者，适用于受控 CI 环境和已验证仓库。
-
-### Q18：SSRF 防护
-
-HTTP Hook 的自定义 DNS lookup 阻止 private/link-local/metadata 范围，并检查 IPv4-mapped IPv6。loopback 被明确允许，以支持本地策略服务。使用全局代理时需要依赖代理自己的 DNS/egress policy。
-
-### Q19：会话恢复的分支选择
-
-事件有 UUID 和 parent UUID。加载器选择目标 leaf 后沿 parent 链执行 projection。branch 和 rewind 都产生明确的新链语义。
-
-### Q20：系统测试方法
-
-以状态迁移和协议不变量为中心：构造 provider stream，断言消息序列、tool pair、重试上限、abort、task status 和持久化。纯函数测边界，TUI 测事件，真实 provider 做少量契约验证，构建再检查 Node 产物和 stub/externals。
-
-## 16.8 深入追问与限制
-
-### reactive compact 的当前状态
-
-当前源码快照中 `src/services/compact/reactiveCompact.ts` 是 feature-gated stub，`isReactiveCompactEnabled()` 返回 false。可讲标准 auto compact/context collapse，不能声称 open build 已实际启用 reactive compact。
-
-### gRPC 的成熟度
-
-gRPC 当前是开发原型。它由开发脚本启动，并使用 insecure transport、内存 Map session 和有限治理。生产化至少需要 TLS、认证授权、限流、持久 session、审计和多租户隔离。
-
-### MCP server 入口的能力范围
-
-当前 MCP server 入口主要重暴露选定工具。该入口构造较薄的非交互上下文并直接调用工具。完整 TUI query loop 不在其服务范围内。
-
-### telemetry 与产品网络流量
-
-open build 的 analytics/sink 是 no-op，并包含 privacy build check。模型 API、OAuth、MCP、WebFetch、插件和更新属于显式功能网络流量。
-
-### 权限对 prompt injection 的限制范围
-
-不能。权限降低可执行影响，不能可靠判断自然语言意图。用户若批准任意 Bash，进程可在当前 OS 权限内组合读文件和出网。应叠加 sandbox、最小规则和部署隔离。
-
-## 16.9 个人贡献表达模板
-
-只选择能用 commit、测试或设计记录证明的模板：
-
-### 若贡献 provider 兼容
-
-> 我负责 `[具体 provider/adapter]`。问题是 `[具体协议差异]`。上层 query loop 保持原有实现。我在 transport 边界完成 `[字段/stream/error]` 归一化，并补充 `[测试文件/真实模型路径]`。该范围可以避免影响其他 provider。主要权衡是 `[兼容性与严格校验]`。
-
-### 若贡献工具/权限
-
-> 我修改了 `[具体工具或 permission stage]`。我先保留 deny/policy/safety 的优先级，只在 `[精确条件]` 放行。测试覆盖正常路径以及 symlink、abort、拒绝和 headless/SDK 场景。没有把一次批准扩大成持久全局规则。
-
-### 若贡献 UI
-
-> 我负责 `[具体交互]`，事实状态位于 `[store/queue/guard]`，组件只订阅所需 selector。重点处理 stream 高频更新、ESC 优先级、窄终端和恢复状态，并用 `[测试和手工终端]` 验证。
-
-### 若主要是二次开发或学习项目
-
-> 我基于 OpenClaude 完成了 `[明确改动/集成/部署]`，并系统梳理了它的 Agent loop、provider adapter 和安全模型。上游核心架构由项目维护者设计。我的工作范围是 `[可证明范围]`。
-
-这种表述比笼统说“我开发了 OpenClaude”更可信，也给面试官明确追问边界。
-
-## 16.10 演示脚本
-
-准备一个 5 分钟可重复 demo：
-
-1. 在临时 Git 仓库启动交互 CLI，解释 trust。
-2. 要求 Agent 阅读一个小模块并修改一处有测试的 bug。
-3. 展示 Read/Grep 后的 FileEdit permission 或 diff。
-4. 运行 focused test，指出 Bash permission/sandbox 状态。
-5. 用 `/context` 或相关 UI 展示 token/context。
-6. 结束后 resume 会话，解释 JSONL parent chain。
-7. 可选切换 provider profile，展示上层 loop 无变化。
-
-提前准备失败路径：API key 无效、模型不支持 tool calling、sandbox 依赖缺失、终端过窄。演示中出现故障时按错误层分类，比重启程序更能证明理解。
-
-## 16.11 面试前自检
-
-- 可以独立画出输入到 tool result 的完整时序。
-- 可以说明 AppState、bootstrap、QueryGuard、command queue 的生命周期差异。
-- 可以解释 query retry transition、conversation branch 和 Git worktree 三类分支。
-- 可以解释 provider profile、model descriptor 和 transport 的区别。
-- 可以列出 trust、permission、safety 和 sandbox 四层边界。
-- 可以解释同步 Agent、后台 Agent、teammate 和 shell task。
-- 可以指出当前 open build 的 stub 和禁用能力。
-- 可以用一个真实 commit 说明问题、方案、测试和权衡。
-- 可以准确说明尚未读过或未运行过的部分。
-
-完成这些问题后，再按 [17 源码导航与术语表](17-source-map-glossary.md) 做定向复习。
+OpenClaude 以会话编排为中心。上下文模块准备模型输入。模型接入模块处理供应商差异。工具和 Agent 模块执行操作。扩展模块增加能力。状态模块维持当前运行情况。持久化模块保存完整历史。安全模块检查每个具有外部影响的步骤。各入口复用这些核心模块，并提供各自的输入输出方式。

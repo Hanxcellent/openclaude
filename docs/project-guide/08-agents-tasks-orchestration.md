@@ -1,275 +1,180 @@
-# 08. Agent、任务、团队与编排
+# 08. Agent 与任务编排
 
-## 1. 四种不能混为一谈的执行单元
+## 1. 模块职责
 
-| 概念 | 主要实现 | 生命周期 | 与父 Agent 的关系 |
+Agent 与任务模块负责拆分复杂工作、运行独立上下文、跟踪长任务、传递协作消息和隔离并行文件修改。
+
+系统包含四类执行单元：
+
+| 类型 | 主要用途 | 父会话等待 | 独立上下文 |
 |---|---|---|---|
-| 同步 subagent | `AgentTool` + `runAgent()` | 父工具调用内 | 父等待最终结果 |
-| 后台 local agent | `LocalAgentTask` | 独立 task | 立即返回 ID，完成后通知 |
-| in-process teammate | `InProcessTeammateTask` | 长驻、可 idle | 有团队身份、邮箱和计划审批 |
-| shell/remote/workflow task | `src/tasks/*` | 后台 task | 通过统一 Task 状态管理 |
+| 同步 Subagent | 完成一个明确子任务 | 等待 | 是 |
+| 后台 Agent | 长时间或并行工作 | 不等待 | 是 |
+| Teammate | 持续团队协作 | 不持续等待 | 是 |
+| 普通 Task | Shell、Remote、Workflow 等长工作 | 根据类型 | 根据类型 |
 
-`TaskCreate/TaskUpdate/TaskList/TaskGet` 还会创建**协作待办项**。它们是 Agent 团队共享的工作清单。`TaskState` 表示进程任务。两类 Task 使用独立状态机。
+协作待办项用于表示团队工作清单。它与运行中的 Task 使用不同状态和流程。
 
-## 2. Agent 定义来源
+## 2. Agent 定义
 
-`src/tools/AgentTool/loadAgentsDir.ts` 将以下来源统一成 `AgentDefinition`：
+Agent 定义描述一个子 Agent 的职责和限制：
 
-- built-in：general-purpose、Explore、Plan、statusline setup 等。
-- user/project/policy/flag 目录中的 Markdown 或 JSON。
-- plugin agents。
-- SDK 直接传入的 agents。
+- 名称和用途。
+- System Prompt。
+- 可用工具。
+- 默认模型。
+- 权限模式。
+- Skill 和 MCP 要求。
+- 后台运行能力。
+- Worktree 隔离要求。
 
-定义可声明：
+Agent 定义可以来自内置配置、用户配置、项目配置、插件和 SDK。管理员策略具有最高优先级。缺少必要 MCP Server 的 Agent 不会进入可用列表。
 
-- `tools` / `disallowedTools`。
-- system prompt、initial prompt、skills。
-- model、effort、permission mode。
-- max turns、max steps。
-- MCP servers 与 hooks。
-- persistent memory scope。
-- `background: true`。
-- `isolation: worktree`。
+## 3. 子 Agent 上下文
 
-同名定义按来源组合，后处理组覆盖先处理组。managed/policy 位于最高覆盖层。`activeAgents` 还会按 required MCP server 和 allowlist 过滤。SDK non-interactive 可通过环境变量禁用全部 built-in agents。
+子 Agent 启动时获得以下内容：
 
-## 3. AgentTool 输入分支选择
+- 父任务提供的目标。
+- Agent 专用 System Prompt。
+- 适用的项目指令和工作目录。
+- 经过裁剪的工具集合。
+- 独立消息历史。
+- 独立模型和权限设置。
+- 父会话的中止信号。
 
-`AgentTool` 的基础输入是 description、prompt、可选 `subagent_type`、model、`run_in_background`。功能开启后还可包含 teammate name/team、permission mode、worktree isolation 和 cwd。
+子 Agent 不会直接修改父界面的消息状态。任务进度和最终结果通过任务模块返回。
 
-分支顺序可简化为：
+## 4. 同步 Subagent
+
+同步 Subagent 在父工具调用中运行。父会话持续接收进度并等待最终结果。
+
+```mermaid
+sequenceDiagram
+  participant P as 父会话
+  participant A as Subagent
+  participant M as 模型与工具
+
+  P->>A: 提交子任务
+  A->>M: 执行独立会话循环
+  M-->>A: 返回进度和结果
+  A-->>P: 返回最终子任务结果
+  P->>P: 将结果加入主会话
+```
+
+父任务需要直接使用子任务结果时，采用同步模式。
+
+## 5. 后台 Agent
+
+后台 Agent 先注册任务，再启动独立会话循环。父工具立即返回任务 ID。
 
 ```mermaid
 flowchart TD
-  A[AgentTool.call] --> B{team + name}
-  B -- 是 --> C[spawn teammate]
-  B -- 否 --> D{fork gate 且省略 subagent_type}
-  D -- 是 --> E[fork child]
-  D -- 否 --> F[选择 built-in/custom agent]
-  E --> G{async}
-  F --> G
-  G -- 是 --> H[registerAsyncAgent]
-  G -- 否 --> I[register foreground + runAgent]
-  I --> J{收到 background signal}
-  J -- 是 --> K[iterator 继续由后台 closure 消费]
-  J -- 否 --> L[同步返回最终结果]
+  A[创建后台 Agent] --> B[注册任务]
+  B --> C[返回任务 ID]
+  B --> D[后台执行]
+  D --> E[更新进度和输出]
+  E --> F[完成或失败]
+  F --> G[生成任务通知]
+  G --> H[加入主会话队列]
 ```
 
-teammate roster 采用扁平结构。teammate 无法继续 spawn teammate。teammate 可以运行普通同步 subagent。in-process teammate 无法启动后台 subagent。后台子任务的生命周期会超出 leader 进程中的 teammate turn。
+用户可以查看任务状态、读取输出、发送消息或停止任务。主会话取消不会自动停止所有后台任务。任务停止使用独立操作。
 
-## 4. `runAgent()` 执行流程
+## 6. 前台转后台
 
-`src/tools/AgentTool/runAgent.ts` 复用主 `query()` 语义。该函数构造隔离的子上下文：
+部分前台 Agent 可以在运行中转为后台。转换发生时，父会话停止等待，并获得任务 ID。Agent 保留已经建立的上下文、模型请求和进度。
 
-1. 选择 Agent model、effort 和 provider override。
-2. 生成 Agent 专属 system prompt 和 user context。
-3. 按定义、运行模式和常量白名单裁剪工具。
-4. 合并预加载 skill、agent memory、MCP 和 session hooks。
-5. 建立独立 AbortController、messages 与 token/step 限额。
-6. 逐条消费 `query()` 生成器并向父侧 yield progress/message。
-7. 在工具轮边界注入 `SendMessage` 排队的新消息。
-8. 最终由 `finalizeAgentTool` 提取文本、usage、agent ID 等结果。
+Plan mode、特定模型限制或后台功能关闭时，系统会保持同步执行。
 
-普通 subagent 默认不能使用 TaskOutput、plan mode 工具、AskUserQuestion、TaskStop 和递归 workflow。异步 Agent 的允许工具更窄，并禁止再次调用 AgentTool，避免无限后台递归。in-process teammate 额外获得团队待办和 SendMessage 工具。
+## 7. Task 管理
 
-Agent 的普通 `setAppState` 可被替换成 no-op，防止它修改父 TUI 的会话状态。任务注册、通知和跨 turn 清理通过 root `setAppStateForTasks` 明确穿透隔离。
+Task 记录统一保存以下信息：
 
-## 5. 同步 Agent 的状态流
+- Task ID 和类型。
+- 当前状态。
+- 描述和启动时间。
+- 进度摘要。
+- 输出文件位置。
+- 中止控制器。
+- 前台或后台标记。
+- 完成通知状态。
 
-同步 Agent 可以在运行期间转入后台：
+不同任务类型使用自己的执行器。Task 管理模块提供统一的注册、更新、停止、列表和通知能力。
 
-```text
-created
-  -> registered foreground (isBackgrounded=false)
-  -> runAgent iterator yields progress
-  -> completed/failed -> unregister foreground -> ToolResult
-                    或
-  -> background signal -> isBackgrounded=true
-       -> 父 ToolResult 立即返回 task_id/output_file
-       -> 后台继续消费同一个 iterator
-       -> terminal state + task-notification
-```
+## 8. 输出与通知
 
-前台注册返回一个仅创建一次的 `backgroundSignal` promise。UI 的 background-all 或自动超时会解析该 promise。父侧随后停止等待。Agent iterator 保持运行。后台 closure 接管后续消费。“转后台”沿用原任务和已经产生的上下文。
+后台输出持续写入任务文件。界面只保留有限数量的近期消息，控制内存占用。用户打开任务详情时，系统从磁盘加载完整记录。
 
-若后台功能禁用、Copilot 优化要求同步或 plan mode 需要同步审批，则不会提供这条转换路径。
+任务进入 completed、failed 或 cancelled 后会生成一次通知。通知包含任务 ID、状态、摘要和输出位置。主会话在当前步骤结束后读取通知。
 
-## 6. 显式后台 Agent
+## 9. 运行中消息
 
-显式后台分支先 `registerAsyncAgent()`：
+用户可以向运行中的 Agent 发送新消息。消息进入 Agent 的 pending queue。当前模型请求继续执行。一轮工具执行结束后，新消息作为用户输入加入 Agent 上下文。
 
-- 生成 `a` 前缀 task ID，同时作为 agent ID。
-- `isBackgrounded=true`，状态由 pending 转 running。
-- 为 task output 初始化磁盘文件/sidechain 链接。
-- 使用不链接父 query ESC 的 AbortController。
-- 立即向父模型返回 task ID 和 output path。
-- detached runner 更新 tool-use/token/recent activity progress。
-- completed/failed/killed 后发送一次 notification。
+消息不会插入正在传输的 API stream。该规则保持消息顺序和 provider 协议完整。
 
-父 query 的 ESC 不应默认杀掉已明确后台化的任务。`TaskStop`、全量 kill 或进程 shutdown 才走其 kill controller。注册 cleanup 能防止进程退出时遗留运行中的本地任务。
+## 10. Fork Agent
 
-## 7. 统一 Task 框架
+Fork Agent 从父会话复制适用历史，再移除未完成工具请求和无关状态。Fork 适合需要理解父会话背景的子任务。
 
-`src/Task.ts` 定义运行任务公共状态：
+Fork 后的消息历史独立增长。子 Agent 的新消息不会自动加入父会话。最终结果通过工具结果或任务通知返回。
 
-```ts
-type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'killed'
-```
+## 11. Worktree 隔离
 
-公共字段包括 ID、type、description、toolUseId、起止时间、output file/offset 和 `notified`。当前 concrete type 有：
+Worktree 为 Agent 创建独立 Git 工作目录。它用于隔离并行文件修改。
 
-- `local_bash`。
-- `local_agent`。
-- `remote_agent`。
-- `in_process_teammate`。
-- `local_workflow`。
-- `monitor_mcp`。
-- `dream`。
+创建过程会检查名称、路径、仓库状态和 Hook 结果。Agent 收到新的工作目录，并在该目录中执行文件和 Shell 工具。
 
-ID 由类型前缀加 8 位小写字母数字组成。随机性也用于降低攻击者提前布置同名 task output symlink 的可行性。
+Agent 完成后：
 
-`Task` 多态接口目前只统一 `kill()`。spawn/render 各类型使用专用入口。`registerTask`、`updateTaskState`、`stopTask`、output delta 和 SDK progress 由 framework 统一提供。
+- 无文件变化的 worktree 可以自动移除。
+- 存在未提交变化或新 commit 的 worktree 会保留。
+- 无法确认变化状态时保留 worktree。
+- 用户可以明确选择保留或删除。
 
-`isBackgroundTask()` 把 running/pending 且已 backgrounded 的 task 放入状态栏。已注册的前台 Agent 保持前台显示状态。
+Conversation branch 只创建新的消息历史。它不提供文件隔离。
 
-## 8. 输出文件与任务通知
+## 12. Teammate
 
-后台任务的完整输出落盘，AppState 只保存 offset 和摘要。这样模型可用 Read 按需读取，不需要把增长中的日志反复塞进上下文。
+Teammate 是具有长期团队身份的 Agent。它拥有名称、邮箱、idle/active 状态、计划审批和协作任务。
 
-terminal transition 会生成：
+Teammate 完成一次 prompt 后进入等待状态。新邮箱消息到达后，它会继续处理。Shutdown、kill 或不可恢复错误会结束 teammate。
 
-```xml
-<task-notification>
-  <task-id>...</task-id>
-  <status>completed|failed|killed</status>
-  <summary>...</summary>
-  <output-file>...</output-file>
-  <result>...</result>
-  <usage>...</usage>
-</task-notification>
-```
+Teammate 可以运行普通同步 Subagent。团队结构保持扁平，teammate 不会继续创建新的 teammate 层级。
 
-通知进入统一 pending notification queue。下一个队列处理周期把它作为用户侧控制消息送给模型。`notified` 在状态更新时原子检查并置位。该字段防止 TaskStop、自然完成和读取输出产生重复通知。后台状态变化还会取消基于旧 task state 的 speculative response。
+## 13. 团队消息
 
-`TaskOutput` 支持阻塞和非阻塞查询。该工具已标记 deprecated。当前推荐方式是直接 Read `output_file`。阻塞读取受 timeout 和 parent abort 约束。读取完成后会设置 `notified`。
+团队消息支持以下类型：
 
-## 9. LocalAgentTask 的内存控制
+- 普通文本。
+- 广播。
+- Shutdown 请求和响应。
+- Plan 审批请求和结果。
+- Idle 和状态通知。
+- 协作任务更新。
 
-local agent 任务保存：progress、pending messages、少量 messages UI mirror、retain/diskLoaded、evict deadline。完整 transcript 在 sidechain JSONL 和 output file 中。
+计划只能由团队负责人审批。结构化控制消息不能跨无关 session。跨机器消息需要额外许可。
 
-- 进入 Agent transcript 视图时 `retain=true`，防止 terminal task 被回收。
-- 首次查看从磁盘 UUID-merge，之后接收 live append。
-- 退出视图后设置 grace deadline。
-- terminal task 默认在短暂展示后释放大对象。
-- progress 的 input token 取最新累计值，output token 跨 turn 求和，避免重复计算。
+## 14. 协作待办
 
-## 10. SendMessage 与运行中 Agent
+协作待办记录工作项、负责人、依赖关系和完成状态。依赖关系形成有向图。系统会检查循环依赖。
 
-给正在运行的 local agent 发消息不会中断当前 API stream。消息加入 `pendingMessages`，在下一个工具轮边界 drain，作为新的 user input 注入。
+任务更新可以立即反映在团队界面。待办状态不会直接停止 OS 进程。运行任务需要通过 Task 停止操作中止。
 
-给已停止且具有 transcript 的 Agent 发消息会调用 `resumeAgentBackground()`：
+## 15. 取消与失败
 
-1. 从 sidechain 恢复并过滤空 assistant message。
-2. 重建 tool-result replacement state。
-3. 恢复原 Agent definition、model 和元数据。
-4. 存在旧 worktree 时触碰 mtime 并继续使用。旧 worktree 缺失时回退父 cwd。
-5. 重新注册后台 task，执行新 prompt。
-6. 完成后照常通知。
-
-该流程使用持久 transcript 创建新的 continuation task。已终止的 Promise 不会恢复。
-
-## 11. Fork Agent
-
-fork 功能开启时，省略 `subagent_type` 表示继承父对话。`buildForkedMessages()` 构造 cache-stable 前缀：
-
-- 继承父消息上下文。
-- 把同一 assistant message 中的其他 fork tool use 补成固定 placeholder result。
-- 追加 fork worker 约束和当前 directive。
-- 复用父侧冻结的 rendered system prompt。
-
-所有 sibling fork 的公共前缀必须字节一致。该条件支持共享 prompt cache。fork child 保留 Agent schema，以维持 tool list/cache。`isInForkChild()` 会在调用时拒绝再次 fork。该限制防止递归 fork。
-
-fork 默认走后台通知模型。resume 时必须重建父 system prompt。无法证明一致时直接报错，避免在错误上下文中继续。
-
-## 12. Worktree 隔离
-
-Agent 可由调用参数或 Agent 定义要求 `isolation: worktree`。`cwd` 与 worktree 互斥。
-
-创建流程位于 `src/utils/worktree.ts`：
-
-- 校验 slug 长度、字符、`.`/`..` 和路径穿越。
-- 统一放在 `.openclaude/worktrees/<flattened-slug>`。
-- 同仓库 mutation 通过 promise lock 串行化。
-- git/SSH 禁止交互 prompt，避免后台挂死。
-- 可 symlink `node_modules` 等大目录减少磁盘占用。
-- Windows 可自动启用 repo-local `core.longpaths`。
-- fork child 收到路径转换提示，不能盲用父 cwd 的绝对路径。
-
-Agent 完成后，无变化的 git worktree 会自动移除。存在未提交内容或新 commit 的 worktree 会保留，并在通知中返回路径和分支。hook-based worktree 无法可靠判断 VCS 变化，因此采用保守保留策略。删除判断失败时执行 fail closed。`0 changes` 结果需要经过完整验证。
-
-显式 `EnterWorktree/ExitWorktree` 管理主 session worktree。某个 Agent 的私有 isolation 使用独立语义。Exit 要求用户明确选择 keep 或 remove。存在文件变化时，删除操作要求显式设置 `discard_changes`。
-
-## 13. Teammate 与 subagent 的职责差异
-
-in-process teammate 使用 AsyncLocalStorage 隔离身份和 cwd，状态保存在 `InProcessTeammateTaskState`：
-
-- `agentName@teamName` 身份。
-- 独立 permission mode 和当前 work AbortController。
-- conversation UI mirror、pending user messages。
-- `isIdle`、shutdownRequested、plan approval。
-- 团队共享待办和 mailbox。
-
-完成一次 prompt 后，teammate 进入 idle loop：
-
-1. 检查直接发给自己的 pending message。
-2. 尝试领取共享待办中的 pending task。
-3. 无工作则发 idle notification 并等待 callback/message。
-4. 收到新工作后恢复 running。
-5. 只有 shutdown、kill 或不可恢复异常才进入 terminal state。
-
-为了防止大规模 swarm 内存增长，AppState 中 teammate 的 UI message mirror 最多保留 50 条。完整上下文保存在 runner 局部数组和 transcript 磁盘中。
-
-## 14. 团队邮箱与协议消息
-
-跨进程 teammate 使用文件邮箱：`~/.claude/teams/<team>/inboxes/<agent>.json`。写入采用 async file lock、重试和锁内重读，避免多个成员并发覆盖。
-
-`SendMessage` 支持：
-
-- 普通点对点文本。
-- `*` 广播文本。
-- shutdown request/response。
-- plan approval response。
-- feature 开启时的 UDS peer/Remote Control 文本。
-
-结构化控制消息不能广播或跨 session，plan 只能由 team lead 批准。跨机器 bridge 文本需要额外显式许可，因为它会作为另一会话的用户 prompt 到达。
-
-in-process teammate 的权限询问通过 leader permission bridge 进入主 TUI 的标准确认队列。保存规则可以写回共享上下文。写回过程必须保留 leader 当前 mode。worker 的派生 mode 保持在 worker 范围内。
-
-## 15. 协作待办 DAG
-
-`TaskCreate/Update/List/Get` 操作的是持久团队任务列表。待办包含 subject、description、active form、owner、status、blockedBy/blocks 等关系。
-
-- teammate 可原子领取 pending 且未被阻塞的 task。
-- 标记 completed 会解除依赖者的 blocked 状态。
-- owner 与 roster 协同，便于 leader 观察分工。
-- in-process runner 在 idle 时自动寻找可领取项。
-- 状态更新立即反映在 team UI。该操作不具有 OS 进程 kill 语义。
-
-面试时应把它称为“共享工作图/任务清单”，把 `TaskState` 称为“执行任务状态”，以避免概念混乱。
-
-## 16. 取消和失败矩阵
-
-| 场景 | 结果 |
+| 场景 | 默认行为 |
 |---|---|
-| 同步 Agent 父 query ESC | 子 controller 中止，父得到 interrupted result |
-| 显式后台 Agent 父 query ESC | 通常继续运行 |
-| foreground Agent 转后台 | 不重启，iterator 被后台接管 |
-| TaskStop | 类型分派 kill，状态转 killed，输出回收 |
-| in-process teammate 当前工作 ESC | 当前 turn 中止，teammate 回 idle |
-| teammate shutdown approval | 整个 teammate controller 中止 |
-| worktree clean | 可自动清理 |
-| worktree changed/检查失败 | 保留并返回位置 |
-| background permission 最终为 ask | PermissionRequest hook 后自动 deny |
-| resume worktree 已丢失 | 记录警告并回退父 cwd |
+| 同步 Subagent 的父请求取消 | 子 Agent 接收中止信号 |
+| 后台 Agent 的父请求取消 | 后台 Agent 继续运行 |
+| 用户停止后台 Task | Agent 和子进程接收中止信号 |
+| Agent 失败 | 保存错误并通知父会话 |
+| Worktree 存在变化 | 保留目录并返回位置 |
+| 权限无法确认 | 后台操作拒绝执行 |
+| 恢复时工作目录丢失 | 记录警告并回到父目录 |
 
-下一章：[09 TUI 与交互状态流](09-tui-interaction-flow.md)。
+## 16. 模块关系
+
+会话编排模块决定启动同步或后台 Agent。任务模块保存状态和输出。命令队列传递完成通知。持久化模块保存子 Agent 历史。权限模块处理子 Agent 工具。Git Worktree 提供文件隔离。团队模块管理身份、消息和计划。
+
+下一章说明终端界面怎样展示这些状态并处理用户输入。

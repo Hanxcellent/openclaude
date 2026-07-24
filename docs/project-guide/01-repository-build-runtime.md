@@ -1,140 +1,117 @@
-# 01. 仓库、构建与运行时
+# 01. 运行环境与系统装配
 
-## 1. 技术栈
+## 1. 运行形态
 
-- 语言：TypeScript strict、ESM。
-- 交互 UI：React + 自维护 Ink 派生实现（`src/ink/`）。
-- 开发/构建/测试：Bun。
-- 安装后运行时：Node.js `>=22.0.0`。
-- CLI 参数：Commander。
-- schema：Zod。MCP JSON Schema 额外用 Ajv。
-- 子进程：Node APIs、`execa` 等。
-- API：Anthropic SDK + OpenAI/Gemini/云平台适配。
+OpenClaude 的发布产物运行在 Node.js 22 或更高版本。项目开发、依赖管理、构建和测试使用 Bun。用户运行 CLI 时只依赖 Node.js 和发布包中的构建产物。
 
-`package.json` 的 `bin.openclaude` 指向 `bin/openclaude`。发布文件主要包含 launcher、bundled `dist/cli.mjs`、`dist/sdk.mjs` 和声明文件。用户执行的是构建产物。
+系统提供多种运行形态：
 
-## 2. 目录职责
+| 形态 | 主要用途 | 交互方式 |
+|---|---|---|
+| 终端交互 | 日常开发任务 | React/Ink TUI |
+| Headless | 脚本和自动化 | 标准输入输出 |
+| SDK | 应用内嵌 | JavaScript/TypeScript API |
+| MCP Server | 向外部客户端提供工具 | stdio 协议 |
+| Remote | 远程控制本地会话 | WebSocket 或远程 I/O |
+| SSH | 在远端环境启动和连接会话 | SSH 与本地转发 |
+| gRPC | 开发阶段的服务化实验 | gRPC stream |
 
-| 目录 | 作用 |
-|---|---|
-| `src/entrypoints/` | CLI、SDK、MCP、生成类型等入口 |
-| `src/bootstrap/` | 轻量早期状态和启动隔离 |
-| `src/screens/`, `src/components/` | TUI 页面和组件 |
-| `src/ink/` | 终端布局、diff、输入、滚动、选择、自定义 renderer |
-| `src/query.ts`, `src/query/` | 主循环及其状态/保护器 |
-| `src/services/api/` | 模型 client、provider transport、retry/error |
-| `src/integrations/` | vendor/gateway/model descriptor registry |
-| `src/tools/` | 内置工具，每个工具通常有 Tool、prompt、UI、tests |
-| `src/services/tools/` | 通用工具执行编排 |
-| `src/utils/permissions/` | 权限规则、路径/命令安全、模式 |
-| `src/tasks/` | shell、agent、remote、workflow 等任务类型 |
-| `src/services/mcp/` | MCP transport、连接、资源/命令/工具发现 |
-| `src/utils/plugins/` | 插件 marketplace、缓存、loader、组件桥接 |
-| `src/services/lsp/` | LSP manager/client/diagnostics |
-| `src/utils/settings/` | settings schema、来源、合并、缓存、policy |
-| `src/utils/sessionStorage.ts` | transcript 的写、读、索引、恢复 |
-| `src/commands/` | slash command 与对话内本地命令 |
-| `src/server/`, `src/grpc/`, `src/ssh/`, `src/remote/` | 非默认部署形态 |
-| `scripts/` | build、生成 descriptor 产物、验证脚本 |
-| `docs/integrations/` | provider 扩展规范 |
-| `web/` | Astro 文档网站，独立 package |
+这些形态共用会话编排、模型接入、工具定义和持久化能力。每种形态单独处理输入、输出、权限确认和资源关闭。
 
-## 3. 构建系统
+## 2. 发布单元
 
-`scripts/build.ts` 用 Bun bundler 生成入口 bundle。关键特征：
+系统由三个主要发布单元组成：
 
-1. 把 React、reconciler、scheduler 锁定到一致的 production 模块，避免同一 bundle 出现两份 React。
-2. 通过 `bun:bundle` 的 `feature()` 做编译期死代码消除。
-3. 分别构建 CLI 和 SDK 入口。
-4. 对需要保留为外部依赖的模块做显式校验。
-5. 生成宏（如版本）供运行时代码读取。
+### 2.1 CLI
 
-### 3.1 feature gate 属于构建控制
+CLI 包含终端界面、Headless 模式、远程入口和本地工具。它负责选择运行模式并初始化当前进程所需的服务。
 
-常见代码：
+### 2.2 SDK
 
-```ts
-if (feature('SOME_FEATURE')) {
-  const module = require('./feature.js')
-}
+SDK 提供不依赖终端界面的调用方式。它复用模型、工具和会话逻辑，并向调用应用返回结构化事件。SDK 构建会限制终端 UI 依赖进入产物。
+
+### 2.3 公共类型
+
+公共类型描述消息、工具、权限请求、会话事件和 SDK 接口。调用应用可以只依赖类型定义，不需要加载 CLI。
+
+## 3. 系统组件装配
+
+进程启动时会根据入口和配置装配所需组件。
+
+```mermaid
+flowchart TD
+  A[选择运行入口] --> B[加载基础配置]
+  B --> C[选择模型与认证]
+  C --> D[创建会话状态]
+  D --> E[加载工具]
+  E --> F[加载可用扩展]
+  F --> G[启动入口专用服务]
+  G --> H[进入会话循环]
 ```
 
-构建脚本会为不同产物给 gate 常量值，关闭分支能被 DCE。因此：
+基础工具和会话能力始终可用。MCP、插件、LSP、团队协作、远程控制和实验能力根据构建产物、运行配置和权限策略加载。
 
-- 关闭功能的依赖可以不进入 open bundle。
-- 顶层 import 可能破坏 DCE，所以很多模块用受 gate 保护的 lazy `require`。
-- 测试可通过 Bun feature 变体覆盖不同构建形态。
-- 发布 bundle 的模块集合由构建期开关决定。
+## 4. 功能可用性的三个条件
 
-### 3.2 两层功能控制
+一项功能可用需要同时满足三个条件：
 
-- **构建层**：`feature('X')` 决定代码的存在状态。
-- **运行/实验层**：环境变量、settings、`getFeatureValue_CACHED_MAY_BE_STALE()` 决定已有代码的启用状态。
+1. 代码进入当前构建产物。
+2. 运行配置启用该功能。
+3. 当前入口和安全策略允许使用该功能。
 
-典型功能同时需要两层为真。
+构建功能开关用于生成不同发布产物。运行设置用于启用已经包含的代码。权限和组织策略用于限制当前用户或会话可以使用的能力。
 
-## 4. Node 发布运行时与 Bun 构建运行时
+部分公开构建版本使用功能不完整的替代模块。此类模块会返回明确的不可用状态。功能清单以当前构建产物为准。
 
-- Bun 提供快速 bundle、test 和 compile-time feature。
-- Node 22 是用户环境的稳定运行契约。
-- 代码不能无意依赖 Bun-only API。`bun:bundle` 是构建宏的特殊例外。
-- `bin/openclaude` 负责运行时版本、安装形态和 bundle 定位。用户使用 Node 启动发布产物。
+## 5. 核心资源
 
-## 5. 自维护终端渲染层
+### 5.1 进程级资源
 
-`src/ink/` 提供完整的终端渲染实现。它包含：
+进程级资源包括配置缓存、provider 认证状态、MCP 连接池、LSP 管理器、插件注册表和日志服务。这些资源可以服务多个请求，并在配置变化或进程退出时释放。
 
-- React reconciler 与自定义终端 DOM。
-- Yoga layout。
-- front/back `Frame` 和屏幕 diff。
-- ANSI tokenizer、grapheme width、双向文本。
-- scroll box、selection、hit test、cursor。
-- terminal raw input、resize、focus、alternate screen。
+### 5.2 会话级资源
 
-`src/ink/renderer.ts` 复用 `Output` 和字符 cache。当窗口 resize、remount、首帧或前帧被 selection 污染时，才选择高写入比/full redraw 路径。该优化直接影响长对话滚动和 streaming 的 CPU/闪烁表现。
+会话级资源包括会话 ID、工作目录、消息历史、任务表、权限请求、AbortController 和大型结果存储。会话结束后，系统需要关闭连接并清理等待中的回调。
 
-## 6. 生成代码和源数据
+### 5.3 请求级资源
 
-provider 集成采用 descriptor + generator：
+请求级资源包括本轮上下文、模型选择、工具执行器、token 预算、恢复次数和流式消息缓冲。请求结束后不会继续占用下一轮状态。
 
-1. descriptor 定义 vendor/gateway/brand/model。
-2. `bun run integrations:generate` 生成 inventory/manifest。
-3. `src/integrations/index.ts` 懒加载 generated artifacts。
-4. registry 查询自动触发 `ensureIntegrationsLoaded()`。
+## 6. 外部依赖
 
-provider 变更需要修改 descriptor 并重新生成产物。生成流程会覆盖对 generated 文件的手工修改。
+OpenClaude 可以连接以下外部系统：
 
-## 7. 测试布局
+- 模型供应商 API。
+- MCP Server。
+- OAuth 和云平台认证服务。
+- Git 与本地文件系统。
+- Shell 和本地可执行程序。
+- LSP Server。
+- 插件 marketplace 和更新服务。
+- 远程控制服务。
 
-测试通常与源码共置为 `*.test.ts(x)`，另有 `src/__tests__/` 和根 `tests/`。常见层级：
+外部依赖失败时，系统会根据能力重要性选择终止、降级、重试或保留核心会话。模型认证失败通常阻止模型请求。可选 LSP 或插件失败通常形成警告。安全策略可以将特定可选能力设置为强制要求。
 
-- 纯函数单测：settings merge、provider error parsing、path safety。
-- 状态机测试：QueryGuard、query transitions、retry breaker。
-- Tool contract 测试：input validation、permission、output mapping。
-- React/Ink 组件测试：PromptInput、REPL lifecycle。
-- provider 测试：协议形状和模型推荐。
-- smoke：打包产物能在 Node 环境启动。
+## 7. 数据位置
 
-## 8. 常用验证命令
+系统使用用户目录保存全局设置、认证信息、插件和长期记忆。项目目录可以提供项目设置、指令和扩展配置。会话目录保存 JSONL 日志、任务输出、大型工具结果和文件历史快照。
 
-```bash
-bun run build
-bun run smoke
-bun run check
-bun run typecheck
-bun run typecheck:type-tests
-bun test ./src/path/file.test.ts
-bun run test:provider
-bun run test:provider-recommendation
-```
+设置来源具有优先级和信任等级。项目配置需要经过目录信任检查。凭据优先保存在系统安全存储中。日志和会话数据会过滤已知敏感字段。
 
-触及 `web/` 时另跑 `bun run web:typecheck` 和 `bun run web:build`。
+## 8. 运行环境设计依据
 
-## 9. 阅读建议
+### 8.1 CLI 与 SDK 分离
 
-- 阅读工作应从导出符号和 `buildTool()` 定义开始。UI 文案仅用于呈现行为。
-- 看见 lazy `require` 时先查 gate。
-- 看见 `_DEPRECATED` 时需要检查调用者。该标记可能对应公开兼容层。
-- 遇到 provider 分支，先判断是 descriptor 元数据、env compatibility，还是不可消除的协议差异。
+CLI 需要终端渲染、键盘输入和交互对话框。SDK 需要较小依赖和可控的资源管理。独立发布单元可以避免应用内嵌 SDK 时加载完整终端界面。
 
-下一章：[02 入口与启动链路](02-entrypoints-startup.md)。
+### 8.2 可选组件延迟加载
+
+插件、LSP、MCP 和远程能力可能增加启动时间或引入外部依赖。系统在确认入口和配置后加载这些组件。简单命令和精简模式可以减少启动操作。
+
+### 8.3 资源按范围管理
+
+进程、会话和请求具有不同的存续时间。资源按范围创建和释放可以减少跨会话污染，并支持 SDK 在同一进程中连续运行多个会话。
+
+## 9. 相关章节
+
+启动装配顺序见 [02 启动流程](02-entrypoints-startup.md)。入口差异见 [13 使用入口与部署形态](13-entrypoint-modes-sdk-remote.md)。构建和测试细节见附录 [15 工程质量与验证](15-engineering-and-testing.md)。

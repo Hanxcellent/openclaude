@@ -184,5 +184,10 @@
     }
   },
   "active": "0d550439e7844300",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "03-state-and-data-model.md",
+    "02-entrypoints-startup.md",
+    "01-repository-build-runtime.md",
+    "00-architecture-overview.md"
+  ]
 }

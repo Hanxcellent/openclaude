@@ -1,271 +1,185 @@
-# 09. TUI 与交互状态流
+# 09. 终端交互
 
-## 1. TUI 的层次
+## 1. 模块职责
 
-```text
-main.tsx
-  -> render(<App initialState> <REPL .../> </App>)
-App
-  -> AppStateProvider
-  -> StatsProvider / FPS metrics / Mailbox
-REPL
-  -> Messages / VirtualMessageList
-  -> streaming text / spinner / task panels
-  -> permission and other modal overlays
-  -> PromptInput
-custom Ink renderer
-  -> React reconciler -> Yoga layout -> Frame -> terminal diff
+终端交互模块负责接收键盘输入、展示会话消息、显示工具和任务进度、处理权限确认、管理滚动与视图，并将用户操作转换为会话事件。
+
+界面只负责交互和展示。模型请求、工具执行和持久化由对应模块完成。
+
+## 2. 界面组成
+
+```mermaid
+flowchart TB
+  A[应用框架] --> B[会话消息区]
+  A --> C[输入区]
+  A --> D[状态栏]
+  A --> E[对话框层]
+  A --> F[任务与 Agent 视图]
+  B --> G[文本 工具 进度 错误]
+  C --> H[Prompt Command Bash]
+  E --> I[权限 模型 配置 恢复]
 ```
 
-`REPL.tsx` 是交互宿主。它管理主消息数组、query lifecycle、streaming 聚合、输入提交、取消、dialog 仲裁、会话恢复、远端桥和 TUI 布局。
+### 2.1 会话消息区
 
-## 2. 三类 UI 状态
+消息区展示用户消息、Assistant 文本、thinking、工具调用、工具结果、系统通知和错误。流式文本在接收时持续更新。完整消息在流结束后固定。
 
-### 2.1 AppState
+### 2.2 输入区
 
-`AppStateStore` 保存需要跨组件、跨 task 或被外部系统观察的状态，例如 model、permission context、tasks、MCP、plugins、agent definitions、todos、当前 Agent 视图和 remote/bridge 状态。
+输入区支持普通 Prompt、Slash command、Bash 快捷输入、粘贴文本、图片和文件引用。Vim 模式提供独立按键行为。
 
-store 是最小外部 store：`getState`、functional `setState`、`subscribe`。`useAppState(selector)` 基于 `useSyncExternalStore`，只在 selector 结果按 `Object.is` 改变时重渲染。selector 不应每次返回新对象。
+### 2.3 状态栏
 
-`onChangeAppState` 是副作用 choke point：permission mode、model、verbose、expanded view、settings 等发生变化时，同步 bootstrap、配置、provider profile 和外部 metadata。这样 Shift+Tab、slash command、remote control 等所有 mutation path 都得到一致副作用。
+状态栏显示当前模型、工作目录、权限模式、token 状态、MCP 连接、后台任务和 Agent 状态。
 
-### 2.2 REPL 局部状态
+### 2.4 对话框层
 
-高频或只与当前视图有关的状态留在 REPL：
+对话框用于权限确认、模型选择、配置、会话恢复和其他需要用户决定的操作。一次只允许一个对话框接收输入。
 
-- `messages` 与同步 `messagesRef`。
-- partial streaming text/thinking。
-- current AbortController。
-- tool permission/prompt/elicitation queues。
-- toolJSX、modal、search、scroll 与 transcript mode。
-- input placeholder、spinner timing 和当前 query generation。
+## 3. 界面状态
 
-这样 streaming delta 不会让整个 AppState 订阅树更新。
+界面状态分为三类：
 
-### 2.3 模块级外部状态
+| 类型 | 内容 | 保存位置 |
+|---|---|---|
+| 共享会话状态 | 模型、权限、任务、MCP、插件、当前 Agent | 会话状态模块 |
+| 当前视图状态 | 输入、滚动、选择、对话框、流式显示 | 终端界面 |
+| 外部服务状态 | 命令队列、查询运行状态、远程连接 | 对应服务模块 |
 
-command queue、QueryGuard、task runtime maps 和若干 manager 位于 React 状态之外。它们提供同步读写或 `useSyncExternalStore` snapshot。该结构可以避免 React batching 造成“逻辑上已运行且 state 尚未提交”的竞态。
+界面通过订阅获取共享状态。高频滚动和流式片段保留在局部状态，减少整体重绘。
 
-## 3. `isLoading` 的派生状态设计
-
-REPL 使用：
-
-```text
-isLoading = queryGuard.isActive || isExternalLoading
-```
-
-主 query 的权威状态保存在 `QueryGuard`。远端 viewer 和 foregrounded task 等不经过本地 onQuery 的宿主使用 `isExternalLoading`。当前实现由 guard snapshot 驱动，避免 React loading state 与同步 ref 的状态分歧。
-
-`QueryGuard` 至少有三阶段语义：
-
-- idle：可接收新主 turn。
-- dispatching/reserved：正在异步解析输入或执行本地命令。
-- running：已取得 query generation 并进入主循环。
-
-guard 必须在 `processUserInput()` 前 reserve。Slash/Bash 预处理本身可能 await。此时显示 idle 会使第二次 Enter 启动并发主 query。
-
-每次运行携带 generation。旧 Promise 的 finally 只能结束自己拥有的 generation，不能清掉后来启动的新 query。
-
-## 4. 从 Enter 到界面更新
+## 4. 从输入到请求
 
 ```mermaid
 sequenceDiagram
-  participant I as PromptInput
-  participant H as handlePromptSubmit
-  participant G as QueryGuard
-  participant R as REPL.onQuery
-  participant Q as query()
-  participant V as Messages/Spinner
-  I->>H: input + mode + pastedContents
-  H->>G: reserve
-  H->>H: processUserInput
-  H->>R: newMessages, controller, model
-  R->>G: tryStart / generation
-  R->>V: append user messages
-  R->>Q: consume async generator
-  Q-->>R: assistant/progress/tool events
-  R-->>V: publish/batch updates
-  R->>G: end in finally
+  participant U as 用户
+  participant P as 输入区
+  participant I as 交互控制
+  participant Q as 会话编排
+  participant V as 消息区
+
+  U->>P: 输入并提交
+  P->>I: 解析输入类型
+  I->>Q: 提交消息或命令
+  Q-->>V: 发布用户消息和运行状态
+  Q-->>V: 持续发布模型与工具事件
 ```
 
-提交时输入框与 placeholder 在同一 React batch 更新。`userInputOnProcessing` 覆盖从清空输入到 user message 真正进入 `messages` 的短暂间隙，防止屏幕闪空。消息长度超过基线后自动隐藏。
+提交前，界面会检查当前对话框和主请求状态。当前会话空闲时，普通 Prompt 启动新请求。当前请求运行中时，输入会作为 follow-up、steer 或控制命令处理。
 
-## 5. PromptInput 的输入模式
+## 5. 输入模式
 
-PromptInput 支持 prompt、bash 及构建功能控制的特殊模式。输入前缀可切换模式。history 保存原始 mode 字符和 pasted contents。Vim 模式换用 `VimTextInput` 状态机，普通模式使用 `TextInput`。
+### 5.1 普通 Prompt
 
-输入层还负责：
+普通文本进入主会话。多行粘贴会保持原始内容。图片和文件引用会作为附件加入。
 
-- slash/typeahead、文件/目录、shell history 和 skill suggestion。
-- multiline、external editor、stash/restore。
-- bracketed paste、ANSI 清理和长文本折叠引用。
-- clipboard/dragged image placeholder。
-- model/thinking/permission mode 快捷操作。
-- footer task/team/bridge/tmux 导航。
-- history search 和 message selector。
+### 5.2 Slash Command
 
-长粘贴内容存入 `pastedContents`。输入 buffer 中保留对应引用。提交前会展开文本引用。存在 placeholder 的图片会被发送。删除 pill 会清理 orphan image。
+Slash command 可以生成模型 Prompt、执行本地操作或打开交互界面。命令根据当前入口和远程安全规则决定可用性。
 
-## 6. 提交时运行中和空闲中的差异
+### 5.3 Bash 快捷输入
 
-### 6.1 空闲
+Bash 快捷输入转为 Shell 工具请求，并经过相同的权限和沙箱流程。
 
-所有输入先构造为一个 `QueuedCommand`，再进入统一 `executeUserInput()`。因此直接输入和稍后 dequeue 的输入共享同一处理路径，图片 resize、附件和 message origin 不会分叉。
+### 5.4 运行中输入
 
-### 6.2 已运行
+运行中输入可以补充后续要求或调整当前方向。立即中止、切换视图等本地控制命令直接处理。需要模型理解的内容进入命令队列。
 
-- prompt 输入进入 queue，并作为下一 turn 的引导。当前 turn 保持运行。
-- bash 等可中断模式在有 interruptible tool 时可 abort 当前工具。
-- local-JSX immediate command 可在 query 运行时打开配置/诊断 UI。
-- 不可排队的特殊 mode 被忽略。
-- 提交时就展开文本 paste，保证以后执行看到的是当时内容。
+## 6. 主请求状态展示
 
-## 7. 统一命令队列
+主请求状态包含准备、运行和结束阶段。界面根据该状态显示 spinner、停止按钮、token 使用和输入行为。
 
-`messageQueueManager.ts` 的队列是模块级数组，snapshot 在每次 mutation 后冻结并换引用。所有用户输入、task notification、orphaned permission 和外部消息使用同一机制。
+远端会话和前台任务可以使用独立 loading 状态。它们不会改变本地主请求的并发控制。
 
-优先级为：
+## 7. 命令队列展示
 
-| priority | 典型含义 |
-|---|---|
-| `now` | 需要抢占当前操作 |
-| `next` | 用户输入和普通外部输入 |
-| `later` | 后台 task notification |
+排队输入和任务通知会显示对应状态。队列处理顺序如下：
 
-同优先级 FIFO。`now` 到达时 REPL 会 abort 当前 controller。用户输入默认高于后台通知，避免多个后台完成事件使真实输入饥饿。
+1. 中止和本地控制操作。
+2. 用户 steer。
+3. 用户 follow-up。
+4. 团队和远程消息。
+5. 后台任务通知。
 
-`processQueueIfReady()` 只在 turn 间运行，并过滤 `agentId`，防止把发给子代理的消息由主线程消费。规则是：
+当前步骤结束后，界面和会话编排模块同步更新消息。
 
-- slash command 单独执行。
-- bash 单独执行，保留逐命令 exit/progress/error。
-- 其他相同 mode 一次 drain 成批。
-- prompt 与 task-notification 不混批。
+## 8. 流式消息
 
-一批中的第一项获得 IDE selection、attachments 和 pasted image。后续项 `skipAttachments`，避免同一 turn 重复注入环境上下文。
+模型文本到达时，消息区更新临时 Assistant 内容。Thinking、工具参数和用量信息分别累计。流结束后，临时内容替换为完整消息。
 
-## 8. Query 流的消息更新
+用户中止时，已经显示的文本会保存为部分回答，并添加中止标记。迟到事件不会覆盖下一次请求内容。
 
-主循环事件通过 `handleMessageFromStream` 归类：
+## 9. 工具与任务显示
 
-- 完整 message 进入 `messages`。
-- 高频 text delta 先积累在 ref，再按换行/节流发布 visible streaming text。
-- thinking 有独立 streaming state，结束一段时间后隐藏。
-- progress 与 in-progress tool IDs 更新 spinner/tool row。
-- compact boundary、API retry 和 system event 各有专门消息组件。
+工具调用可以显示输入摘要、当前进度、最终结果和错误。长结果默认折叠。大型结果提供文件位置。
 
-`messagesRef` 在 functional update 内同步更新，确保随后同一 tick 的异步回调读取最新数组。只依赖 React state closure 会在批处理下发生 last-write-wins 或读取旧消息。
+后台任务显示任务 ID、类型、状态和进度。用户可以打开任务详情、发送消息、停止任务或返回主会话。
 
-流结束时 final assistant message 替代临时 streaming 展示。取消时则先把 ref 中尚未完整发布的 partial text 固化为 assistant message，再追加 interruption marker，保证用户看得到已经生成的内容。
+Agent 视图切换后，输入、消息和权限请求会发送给当前 Agent。
 
-## 9. Escape 的取消顺序
+## 10. 权限对话框
 
-`onCancel()` 按以下顺序处理取消请求：
+工具需要确认时，权限请求进入对话框队列。对话框展示工具、目标资源、风险说明和可选授权范围。
 
-1. 暂停 proactive mode。
-2. snapshot query lifecycle 中的 API/tool operation。
-3. `QueryGuard.forceEnd()` 立即释放交互所有权。
-4. 保存 partial streamed text。
-5. 清 spinner/streaming/token budget 状态。
-6. 若在 permission dialog，调用对应 `onAbort` 并清队列。
-7. 若在 prompt dialog，reject pending promise。
-8. remote mode 发送远端 cancel。local mode abort 本地 controller。
-9. 清除 stale controller 并记录 terminal reason。
+用户可以允许一次、允许当前会话、保存规则或拒绝。决定返回工具模块后，对话框关闭并处理下一请求。
 
-先释放 guard 是为了让 UI 立即恢复可输入。generation 检查保证旧 query 的迟到 finally 不会影响新 turn。工具配对修复由 query/tool 层完成。
+关键权限对话框具有最高显示优先级。工具动画和滚动不会遮挡确认界面。
 
-## 10. Dialog 焦点仲裁
+## 11. 取消顺序
 
-REPL 每帧只选一个 `focusedInputDialog`。大致优先级：
+Escape 或停止操作按以下顺序执行：
 
-1. exit flow。
-2. message selector、resume compact。
-3. sandbox permission、tool permission、prompt、worker permission、MCP elicitation、cost。
-4. idle return、ultraplan。
-5. onboarding/effort/remote callout。
-6. LSP/plugin hint/desktop suggestion。
+1. 停止接受当前请求的后续流式更新。
+2. 保存已经显示的部分文本。
+3. 清理 spinner、token 和工具进度显示。
+4. 关闭权限或输入对话框。
+5. 向本地或远端执行端发送中止信号。
+6. 恢复输入区可用状态。
 
-critical dialog 可以在某些 toolJSX 动画期间显示。该设计防止 Agent 等待用户期间，UI 被 background hint 遮住。低优先级 dialog 在用户主动输入时被抑制，以避免抢焦点。
+界面会立即恢复输入。模型和工具资源在后台完成清理。
 
-进入 tool permission 会暂停 turn elapsed 统计。离开时累计 paused duration。fullscreen 中 dialog 与 transcript 共用 ScrollBox，出现/消失时 `useLayoutEffect` 重新 pin 到底部，避免阻塞对话框位于视口外。
+## 12. 消息渲染
 
-## 11. Message 渲染管线
+不同消息类型使用专用显示组件：
 
-`Messages` 先移除 null-rendering attachment，再按 message type 分发到：
+- 用户文本和附件。
+- Assistant 文本与 thinking。
+- 工具调用和结果。
+- 系统通知和错误。
+- Hook、MCP 和任务事件。
+- 图片、文档和代码差异。
 
-- user text/image/bash/command/task notification。
-- assistant text/thinking/tool use。
-- tool result 的 success/error/reject/cancel。
-- system API error、rate limit、compact/snip boundary。
-- hook progress、team control message。
+消息 ID 用于保持组件稳定。流式更新不会改变已经完成消息的顺序。
 
-多个可折叠 read/search/tool use 可以 grouped render。`verbose` 决定展开程度。brief mode 隐藏非关键细节。工具通过 `renderToolUseMessage`/`renderToolResultMessage` 提供自己的显示。REPL 负责通用渲染编排。
+## 13. 普通与 Fullscreen 模式
 
-Agent transcript 视图替换 displayed messages 和 in-progress ID。输入经 selector 路由到 leader、viewed teammate 或 named local agent。切换视图不会把子 Agent 消息并入主 transcript。
+普通模式将内容写入终端滚动缓冲区。Fullscreen 模式使用 alternate screen，并由渲染器维护当前 Frame。
 
-## 12. 普通模式与 Fullscreen 模式
+Fullscreen 模式适合长会话和稳定布局。终端环境不兼容 alternate screen 或 mouse tracking 时，系统使用普通模式。
 
-### 12.1 普通模式
+## 14. 滚动和新消息
 
-输出利用终端原生 scrollback。内容增长时 Ink diff 更新底部，选择/复制主要由终端控制。
+用户位于底部时，新消息自动保持底部位置。用户向上阅读历史时，新消息不会强制改变当前位置。界面显示新消息数量和跳转入口。
 
-### 12.2 Fullscreen/无闪烁模式
+加载更早历史时，系统保持当前可见消息位置。搜索结果和 Agent 视图使用稳定消息 ID 定位。
 
-启用后使用 alternate screen、固定 viewport 和 `ScrollBox`：
+## 15. 性能策略
 
-- transcript 可虚拟化，只 mount 可见窗口附近消息。
-- prompt/modal 固定在底部。
-- wheel、PgUp/PgDn、Home/End 由应用处理。
-- 支持 hit test、点击展开、文本选择和 hyperlink。
-- 离开底部后关闭 sticky follow，新消息以 divider/pill 提示。
-- 回到底部重新启用 sticky follow。
+- 高频流式内容使用局部状态。
+- 共享状态订阅只更新相关组件。
+- 长历史使用虚拟化和分段加载。
+- 工具进度与完整消息分开更新。
+- Fullscreen 只重绘变化区域。
+- 后台 Agent 的界面消息数量受到限制。
 
-tmux `-CC` 与 alt-screen/mouse tracking 不兼容时默认禁用 fullscreen。显式环境变量可以覆盖该默认值。mouse capture 可以独立关闭。keyboard scroll 和虚拟化保持可用。
+## 16. 交互规则
 
-## 13. 自维护 Ink 渲染器
+1. 同一会话只启动一个主请求。
+2. 一次只显示一个输入对话框。
+3. 已完成消息顺序保持稳定。
+4. 用户排队输入优先于普通后台通知。
+5. 取消后旧事件不能改变新请求。
+6. Agent 视图中的输入和权限发送给当前 Agent。
+7. 滚动、选择和 resize 不改变消息数据。
 
-`src/ink/` 的主要阶段：
-
-```text
-React reconcile
-  -> terminal DOM mutation/dirty flags
-  -> Yoga layout
-  -> render-node-to-output
-  -> back Frame(screen cells + cursor + viewport)
-  -> renderer diff(front, back)
-  -> ANSI patches
-  -> swap/reuse frame buffers
-```
-
-Frame cell 存字符、style/hyperlink ID。pool 减少重复分配。diff 输出 cursor move/show/hide、write、clear 和 scroll 等 patch。
-
-以下情况需要全量或高写入比重绘：首帧、resize、remount/offscreen、前帧被 selection overlay 污染。稳定 streaming 采用局部 diff。
-
-ScrollBox 对纯滚动/尾部追加可生成 DECSTBM scroll hint：把上一屏对应区域内存 blit 到新 Frame，只渲染新露出的边缘行。若同时发生复杂布局变化则回退完整路径。virtual scroll clamp 防止快速 PageUp 时 scrollTop 超过当前 mounted range。
-
-## 14. 滚动与新消息一致性
-
-用户离开底部时，REPL 记录当时 message index 和 scroll height。随后：
-
-- transcript 在第一条新消息前显示 divider。
-- pill 计算可见 assistant turn 数。raw message 数量不参与该计数。
-- tool-use-only/progress 从 assistant 回复计数中排除。
-- 已有新内容时，pill 至少显示 1。工具执行期间不会显示“Jump to bottom”。
-- prepend 历史消息时同步平移 divider index/height。
-- submit、显式 bottom 或视图切换会重新 pin/清理。
-
-ScrollBox 由外部 store 暴露位置 snapshot。pill 可以直接订阅越过 divider 的状态。每个滚动帧无需重渲染整个 REPL。
-
-## 15. UI 性能与正确性不变量
-
-1. query 所有权由同步 guard 决定，不由延迟 React state 决定。
-2. streaming 的逻辑数据在 ref 中完整保存，state 只负责可见发布。
-3. 外部 store selector 返回稳定引用，避免无穷重渲染。
-4. 同时只允许一个输入 dialog 接收按键。
-5. 关键授权 dialog 不能被 tool animation 或滚动位置遮住。
-6. background notification 不应抢在用户 queued input 前面。
-7. Agent view 的输入、消息和 permission mode 必须路由到当前 Agent。
-8. selection、resize 和 alt-screen 切换必须使旧 Frame 失效，不能复用受污染像素。
-9. 虚拟化不得改变 transcript 顺序、tool pairing 或搜索 anchor。
-10. Escape 后 UI 立即可用。迟到事件不能污染下一代 query。
-
-下一章：[10 配置与会话持久化](10-configuration-session-persistence.md)。
+下一章说明设置和会话数据怎样保存并恢复。

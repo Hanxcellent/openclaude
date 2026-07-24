@@ -1,241 +1,172 @@
-# 12. 错误、重试、恢复与特殊场景
+# 12. 错误与恢复
 
-OpenClaude 不用一个全局 `catch` 处理所有故障。错误在接近事实来源的位置分类，再由 API、query、tool、UI 或 shutdown 层执行不同恢复策略。
+## 1. 模块职责
 
-## 12.1 错误处理分层
+错误恢复模块负责分类失败、限制重试、选择恢复方式、传播中止原因、保护消息结构并完成进程退出。
 
-```text
-provider/transport 原始异常
-  -> provider 兼容层分类
-  -> withRetry 判断可重试性
-  -> 转换为 Assistant API error message
-  -> query 状态机决定压缩、降额、fallback 或结束
-  -> UI/SDK 按结构化 message 展示
+错误处理目标包括：
+
+- 临时故障可以自动恢复。
+- 参数和权限错误不会重复请求。
+- 恢复操作具有明确次数限制。
+- 中止后的消息历史保持合法。
+- 可选组件失败不会破坏核心会话。
+- 不可恢复错误可以完整记录和展示。
+
+## 2. 错误层次
+
+```mermaid
+flowchart TD
+  A[供应商或工具原始错误] --> B[模块内分类]
+  B --> C[会话恢复判断]
+  C --> D{处理结果}
+  D -->|重试| E[重新执行当前步骤]
+  D -->|调整| F[压缩 切换 降级]
+  D -->|局部失败| G[生成结构化错误结果]
+  D -->|终止| H[保存错误并结束]
 ```
 
-工具、MCP、hook 和进程异常使用各自相邻的分类器。所有分类器遵循同一原则。可预期业务失败形成结构化结果。不可恢复的程序错误抛到上层。
+Provider、工具、MCP、Hook 和进程分别识别本模块错误。会话编排层只读取统一类别和恢复建议。
 
-## 12.2 Provider 错误规范化
+## 3. API Retry
 
-第一方 Anthropic SDK、Bedrock、Vertex、OpenAI-compatible 服务的异常形态不同。`src/services/api/errors.ts` 将其转成统一的 assistant error message，至少区分：
+API Retry 重新发送内容和参数完全相同的模型请求。
 
-- authentication、permission、billing/quota。
-- rate limit、overloaded、timeout、network。
-- context overflow、max output tokens。
-- model/endpoint not found。
-- image/PDF 尺寸或页数错误。
-- tool calling 不兼容、`tool_stream` 不支持。
-- malformed provider response。
+适合重试的情况包括：
 
-OpenAI-compatible 层把分类写入内部 marker，例如 `openai_category=context_overflow`。用户文案会移除 marker。retry/query 层可以稳定读取该分类。该机制消除了对自然语言错误文案的二次解析。
+- 连接重置和临时 DNS 错误。
+- 请求超时。
+- 部分 429 限流。
+- 5xx 服务错误。
+- 合法 Retry-After 指定的等待。
 
-可自动重试的 OpenAI-compatible 类别限于连接失败、DNS/localhost、请求超时、网络、rate limit 和 provider unavailable。认证失败、模型不存在、工具协议不兼容、配额耗尽等需要用户改变配置，不能靠重复请求解决。
+认证失败、参数错误、模型不存在、用户中止和明确权限拒绝不会进入普通重试。
 
-## 12.3 API Retry 策略
+重试采用指数退避和随机抖动，并设置最大次数。Retry-After 在合理范围内具有优先级。
 
-`withRetry()` 是 API 调用的有限重试器。默认最多 10 次 retry，基础延迟 500 ms，指数退避并加入最多 25% jitter。普通路径的退避基数封顶约 32 秒，合法 `Retry-After` 优先。
+## 4. 服务过载
 
-### 会重试的典型情况
+前台请求遇到 529 或同类过载错误时，可以有限重试。连续失败达到阈值后，系统可以切换备用 model。
 
-- 429、部分 5xx、连接超时和网络异常。
-- AWS/GCP 临时凭据错误。先清凭据缓存。
-- 401 或 token revoked。刷新 OAuth 并重建 client。
-- `ECONNRESET`/`EPIPE`。可关闭 keep-alive 后建立新连接。
-- provider 返回 input + max_tokens 超 context limit。根据剩余空间降低 output budget。
+后台标题、摘要等辅助请求默认减少过载重试，避免服务压力增加。没有备用模型时，系统返回明确的持续过载错误。
 
-每次等待前会 yield `SystemAPIErrorMessage`。TUI/SDK 因此可以显示“正在重试”状态。
+## 5. 上下文溢出
 
-### 不重试的情况
+上下文溢出表示输入、工具定义和预期输出总量超过模型窗口。
 
-- 明确的 quota/billing/credit 耗尽。
-- OpenCode Go 等带重置语义的订阅配额终止错误。
-- 不可重试的兼容性分类。
-- 用户或父任务 abort。
-- 参数/认证错误在刷新后保持不可修复状态。
+恢复顺序如下：
 
-### 529 和容量风暴
+1. 提交已经准备的局部上下文缩减。
+2. 执行自动压缩并重新组装上下文。
+3. 使用允许的其他压缩路径。
+4. 返回原始错误。
 
-后台标题、建议、摘要等非前台 query 默认不重试 529，避免服务过载时后台请求放大流量。前台主查询允许重试。连续 529 达到 3 次后可触发模型 fallback，外部用户无 fallback 时转为明确的 repeated-overload 错误。
+每种压缩方式在同一恢复流程中只执行有限次数。
 
-Fast mode 遇到短 `Retry-After` 会保持同一模型等待，以保留 prompt cache。等待过长或未知时进入 cooldown 并切回标准速度。API 明确拒绝 fast mode 时也只降级一次。
+## 6. 输出达到上限
 
-### 无人值守持久重试
+输出达到 token 上限表示模型请求已经成功，并在回答结束前停止。
 
-仅在编译 feature 和 `CLAUDE_CODE_UNATTENDED_RETRY` 同时开启时，429/529 可进入持久 retry：
+系统可以执行以下处理：
 
-- 最多 100 次。
-- 退避封顶 5 分钟。服务端 reset 最长等待受 6 小时 cap 约束。
-- 长等待每 30 秒 yield heartbeat，防止宿主判定任务空闲。
+- 在允许条件下提高输出上限。
+- 保留已经产生的 Assistant 内容。
+- 加入继续回答的控制消息。
+- 有限次数续写。
 
-这是专用模式，普通交互会话不会无限等待。
+续写达到次数或预算上限后，系统保存部分回答并结束。
 
-## 12.4 Query 层恢复状态机
+## 7. Model 与 Provider Fallback
 
-API retry 只处理同一请求的再次发送。上下文、模型或 token 参数发生变化时，`query.ts` 通过显式 transition 重启本轮。
+当前模型持续过载时，系统可以切换备用模型。当前 provider 不可用时，系统可以切换备用 profile 和 provider。
 
-| Transition | 状态变化 | 防循环条件 |
-|---|---|---|
-| `collapse_drain_retry` | 提交已 staged context collapse | 同一恢复链只 drain 一次 |
-| `reactive_compact_retry` | 用新摘要上下文重试 | `hasAttemptedReactiveCompact` |
-| `context_overflow_compact_retry` | 强制 auto compact 后重试 | 每轮一次 |
-| `provider_max_tokens_retry` | 使用 provider 报告的 output cap | cap 必须更低，且只一次 |
-| `provider_fallback_retry` | 切换 provider profile 和主模型 | 每轮一次 |
-| `max_output_tokens_escalate` | 从默认小 cap 升到更高 cap | 仅未显式覆盖时 |
-| `max_output_tokens_recovery` | 注入 continuation meta prompt | 最多 3 次 |
+切换前会清理目标协议不接受的 thinking、cache 和 tool ID。切换完成后，系统使用相同任务目标重新构造请求。
 
-这些标志属于当前 query state。普通消息不持久化这些标志。持久化会使 resume 错误继承一次性重试状态。
+## 8. 自动压缩暂停
 
-### Context overflow
+自动压缩连续失败达到限制时，系统暂停新的自动压缩。默认暂停一段时间后允许一次试运行。
 
-处理顺序为：
+试运行成功会清空失败计数。试运行失败会重新进入暂停期。该机制防止上下文错误持续触发压缩请求。
 
-1. 若 context-collapse 有已 staged 段，先提交它们。
-2. 可用时尝试 reactive compact。
-3. 对标准 `context_overflow` assistant error，强制 auto compact 并重试一次。
-4. 前述恢复失败时显示原错误并执行 StopFailure hooks。
+## 9. 工具重复失败
 
-当前源码定义能力边界。`src/services/compact/reactiveCompact.ts` 在此快照中是 feature-gated stub。`isReactiveCompactEnabled()` 恒为 `false`。当前开源构建未执行 reactive compact。可用路径包括标准 auto compact 和 context collapse。
+系统根据工具名、输入和错误类别识别重复失败。
 
-API error 后不会运行普通 Stop hooks。模型没有产生有效回答时执行 Stop hook，容易形成“API error -> hook 阻止结束 -> 同一 API error”的循环。这里仅触发 StopFailure。
+达到预警次数时，系统向模型加入具体反馈。模型继续产生相同失败时，本轮结束。工具成功后，对应失败记录会清理。
 
-### Output token 上限
+用户中止产生的工具结果不计为工具失败。工具自身 timeout 计为失败。
 
-该错误表示 provider 已接受输入，并在输出达到上限后截断响应。context overflow 表示输入窗口不足。
+## 10. 中止传播
 
-- provider 报告硬上限时，解析数值并以更低 cap 重试一次。
-- feature 开启且用户没有显式设 cap 时，可先从默认 cap 升到 `ESCALATED_MAX_TOKENS`。
-- 响应继续被截断时保留已产生的 assistant 内容，并追加“直接继续”的 meta user message，最多 3 次。
-- 达到上限后显示原错误，不再递归续写。
+中止可以来自用户、父任务、超时、权限取消、远程断开或进程退出。
 
-OpenRouter 风格的 HTTP 402 若提供“当前余额可承受的 max_tokens”，API retry 层只降额一次。第二次 402 直接失败。
+中止信号从会话编排层传到模型请求、工具、Hook、MCP 和子进程。各模块完成必要清理，并返回对应中止状态。
 
-### Provider fallback
+系统保留具体中止原因。界面可以区分用户取消、超时、父任务结束和进程退出。
 
-rate limit 且配置了 `providerFallbackChain` 时，query 可激活下一 profile，并同时更新 endpoint 对应的主模型后重试一次。compact 和 session-memory fork 不做此切换，避免后台 fork 改写外层会话已经选择的 provider。
+## 11. 工具配对修复
 
-## 12.5 Auto Compact 熔断器
+中止或流式错误可能发生在工具请求已经出现、工具结果尚未生成的阶段。系统会为每个未完成工具请求生成带错误或中止状态的结果。
 
-Auto compact 在正常阈值外还可由内存压力或消息数强制触发。若压缩本身持续失败，立即重试会产生额外 API 请求并继续增大上下文。
+恢复加载时还会执行以下修复：
 
-当前熔断规则：
+- 移除重复工具结果。
+- 补充缺少结果的工具请求。
+- 为角色内容为空的消息加入占位。
+- 排除无法确认位置的孤立消息。
 
-- 连续失败 3 次后 open。
-- 默认冷却 5 分钟。
-- 环境覆盖不得低于 10 秒，非法值回退默认值。
-- 冷却结束允许一次 half-open 尝试。
-- 成功后清空失败计数。half-open 尝试失败时重新进入冷却。
-- 用户手动 compact 不应被后台自动熔断状态无提示吞掉。
+修复后的历史可以继续发送给 provider。
 
-熔断状态由 query caller 线程化保存，不写入 transcript。恢复新进程时从干净状态开始。
+## 12. 流式连接停滞
 
-## 12.6 Tool Failure Loop Guard
+模型流在一段时间内没有事件时，系统将其识别为停滞。允许的 provider 可以改用非流式请求重试一次。
 
-模型可能重复使用同一错误路径或相同无效参数。`toolFailureLoopGuard` 统计三种键：
+非流式降级具有独立开关和次数限制。系统不会在流式与非流式方式之间持续切换。
 
-- tool name + 归一化错误类别。
-- 错误类别。
-- 被修改文件路径。
+## 13. 局部失败隔离
 
-默认阈值为 3，可由 `CLAUDE_CODE_TOOL_FAILURE_LOOP_THRESHOLD` 调整。`0` 禁用。阈值前一次会向模型加入 advisory，达到阈值则返回终止 assistant message。
+可选组件失败会限制在对应模块：
 
-成功执行会清理相关短期计数。某工具成功会清理该工具的持久 signature。文件 mutation 成功只清理对应路径。用户 abort、父 query 结束、background 等生成的合成 tool result 不计为工具失败。真正的 tool timeout 会计入。
-
-该 guard 不把原始路径、工具输入或完整错误写入分析事件，只记录类别性字段，降低遥测泄漏风险。
-
-## 12.7 Abort 的原因传播
-
-Abort 携带类型化 reason。常见 reason 包括：
-
-```text
-user-abort, interrupt, query-timeout, hard-max-query-timeout,
-background, side-task-cancelled, tool-timeout, parent-ended,
-agent-summary-superseded, memory-extraction-superseded
-```
-
-父查询使用 child AbortController 向下传播取消信号。child abort 不会反向取消 parent。parent 监听器使用 WeakRef。被遗弃的 child 可以被垃圾回收。child 主动 abort 时会移除 parent listener。
-
-组合 signal 同时监听父 signal、第二 signal 和 timeout，并返回显式 `cleanup()`。这里不直接依赖 Bun 的 `AbortSignal.timeout()`，因为其 native timer 在超时前可能积累内存。
-
-不同 reason 决定 UI 和 transcript 行为：用户中断产生 interruption message。后台化或 timeout 产生相应 system warning。被新一代 side task 取代的旧摘要/记忆任务可以静默结束。
-
-## 12.8 中断后的 Tool 配对修复
-
-Anthropic 消息协议要求每个 `tool_use` 有对应 `tool_result`，ID 唯一且角色交替正确。流在两者之间中断、resume 从半轮开始或并行消息错误合并时，provider 会返回 400。
-
-`ensureToolResultPairing()` 在发送 API 前执行防御性修复：
-
-- 缺失 result：插入标记为 error 的合成 `tool_result`。
-- 无对应 use 的 result：删除该 block。
-- 重复 tool_use/result ID：只保留一个。
-- 中断的 server-side `server_tool_use`/`mcp_tool_use`：删除无同消息 result 的 use。
-- 删除后 assistant/user 内容为空：插入明确占位，保持合法角色序列。
-
-普通产品运行优先恢复会话可用性。严格训练数据模式则在发现不配对时抛错，不允许合成内容污染轨迹。
-
-恢复旧 transcript 时，`conversationRecovery.ts` 还会：
-
-- 过滤未完成 tool use 之后的合成尾部。
-- 清理孤立 thinking-only assistant message。
-- 判断最后是未响应 user prompt、被工具中断的 turn，还是已完成 turn。
-- 对真正中断的 turn 注入明确 continuation。正常结束于 tool result 的会话保持原状态。
-
-例如 brief mode 中 `SendUserMessage` 的结果可合法终止一轮，恢复器会回溯对应 tool name，避免注入多余的“继续”。
-
-## 12.9 流停滞和非流式降级
-
-兼容 provider 可能建立连接后不再发送 chunk。stream reader 使用 idle timeout。每个有效 chunk 重置计时，真正停滞才 cancel reader。父 signal 已 abort 时保留父 abort 原因，不误报 idle timeout。
-
-在允许的 provider 路径中，stream idle/协议失败可降级到非流式请求。`CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` 可关闭。一次性 guard 约束降级次数，并阻止 streaming 与 non-streaming 之间的反复切换。
-
-Malformed JSON、HTML 网关错误页、缺少工具字段等会被兼容层分类为 provider response 问题，并显示 endpoint/proxy 检查建议。
-
-## 12.10 局部失败隔离
-
-| 故障 | 降级行为 |
+| 组件 | 失败处理 |
 |---|---|
-| 一个 MCP server 连接失败 | 标记 failed/needs-auth，其他 server 可继续 |
-| 一个 plugin 组件损坏 | 记录 PluginError，其他插件/组件继续 |
-| 一个 LSP server 初始化失败 | 跳过该 server，保留其他扩展能力 |
-| 非阻断 hook 失败 | 显示/记录错误，不终止主循环 |
-| 大工具结果写盘失败 | 使用原始 inline result |
-| 外部 settings 文件非法 | 保留错误，不把非法内容当有效配置 |
-| 会话某行 JSON 损坏 | 跳过/隔离，不信任为消息 |
-| cleanup 单项失败 | 聚合或忽略，继续清理其他资源 |
+| 单个 MCP Server | 标记失败并保留其他 Server |
+| 单个 Hook | 根据阻断属性记录或终止当前操作 |
+| 单个 LSP Server | 重启或停止该语言服务 |
+| 单个 Plugin | 跳过该 Plugin 并保留其他扩展 |
+| 后台 Task | 标记失败并通知主会话 |
+| 远程查看连接 | 重连或回到本地状态 |
 
-## 12.11 内存压力
+核心模型认证、强制安全能力和主会话存储失败通常会终止当前入口。
 
-Memory pressure monitor 默认每 30 秒检查 RSS，单会话预算默认取 `OPENCLAUDE_MAX_MEMORY_MB` 或 1,536 MiB：
+## 14. 内存压力
 
-- 80% 为 elevated。
-- 90% 为 critical。
-- critical 清理所有注册的可裁剪缓存。
-- elevated/critical 持续设置一次性 compact request。消费后重置，由 auto-compact cooldown 防止风暴。
+长会话通过以下方式控制内存：
 
-此外，大 tool result 外置、轻量 session list、compact-boundary chunked read 和消息虚拟化共同降低长会话内存。它们比事后捕获 OOM 更重要，因为 V8 进程在真正 OOM 时通常没有可靠恢复空间。
+- 上下文压缩。
+- 大型工具结果外置。
+- 后台 Agent 只保留近期界面消息。
+- 大日志分块读取。
+- 已完成任务按保留规则回收。
+- 流式缓冲在消息完成后释放。
 
-## 12.12 Graceful Shutdown
+内存压力日志会记录当前会话、任务和结果存储状态，用于诊断。
 
-SIGINT、SIGTERM、SIGHUP、终端失联和显式 `/exit` 最终进入幂等 `gracefulShutdown()`：
+## 15. 进程退出
 
-1. 标记 shutdown，阻止重复进入。
-2. 等一帧让 React 清除浮层。
-3. 恢复终端模式并先打印 resume hint。
-4. 运行注册 cleanup，优先确保 session flush。cleanup budget 约 2 秒。
-5. 运行 SessionEnd hooks、关闭 MCP/子进程、刷新遥测等。
-6. 全局 failsafe 到期时强制退出。预算至少 5 秒，并按 SessionEnd hook timeout 增长。
+SIGINT、SIGTERM、SIGHUP、终端断开和显式退出都会进入统一关闭流程。
 
-SIGTERM 使用退出码 143。SIGHUP 使用退出码 129。macOS TTY 被撤销且未收到 SIGHUP 时，系统每 30 秒检测一次 stdin/stdout 可用性并触发清理。
+1. 标记进程正在关闭。
+2. 中止模型、工具和 Hook。
+3. 保存待写入会话事件。
+4. 停止后台任务或记录脱离状态。
+5. 关闭 MCP、LSP、远程连接和监听器。
+6. 恢复终端设置。
+7. 返回退出状态。
 
-`uncaughtException` 和 `unhandledRejection` 会写无 PII 诊断与事件。业务恢复依赖显式 cleanup registry。
+关闭流程可以重复调用，并只执行一次实际清理。
 
-## 12.13 排障顺序
+## 16. 用户可见结果
 
-1. 先识别错误来自 provider、query、tool、hook、MCP 还是 UI。
-2. 查看结构化 error/category，不先依赖显示文案。
-3. 确认一次性 transition 状态，防止手动叠加重试。
-4. 检查 abort reason 和 `AbortError` 名称。
-5. API 400 优先验证 tool pair、上下文长度和 provider tool compatibility。
-6. 长会话检查 compact breaker、工具结果外置和 memory pressure 日志。
-7. 退出问题检查 cleanup 注册、session flush 和子进程信号升级。
+错误结果应包含错误类别、发生阶段、已经执行的恢复操作和可采取的下一步。敏感凭据、完整工具输入和内部路径会根据日志策略过滤。
 
-下一章比较交互 CLI、print/headless、SDK、MCP server、gRPC 与远程入口的控制流差异。
+下一章说明各运行入口怎样使用相同的恢复和资源管理能力。

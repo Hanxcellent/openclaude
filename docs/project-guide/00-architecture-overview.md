@@ -1,162 +1,203 @@
-# 00. 全景与核心心智模型
+# 00. 总体架构
 
-## 1. 项目定位
+## 1. 系统定位
 
-OpenClaude 是“本地控制面 + 可替换模型后端 + 受控执行环境”的 Code Agent CLI。它提供聊天交互和工具执行能力。模型输出可以描述 `tool_use`。运行时经过权限和 Hook 管道后执行文件、Shell、搜索、网络、MCP、LSP 或代理任务。结构化结果随后加入对话。该过程持续到模型停止调用工具或命中终止条件。
+OpenClaude 是一个面向软件开发任务的智能代理系统。用户通过终端、Headless 接口、SDK 或远程会话提交任务。系统调用模型理解任务，并在获得授权后执行文件读取、文件修改、Shell 命令、网络访问、MCP 工具、LSP 查询和子 Agent 任务。
 
-项目的核心价值在于统一下列不稳定边界：
+系统需要同时解决五类问题：
 
-- 多模型 API 和不同流式事件格式。
-- 本地文件/进程能力和用户授权。
-- 长上下文、工具大输出与压缩。
-- 前台交互、后台任务和多代理。
-- 交互 TUI、Headless、SDK、远程等不同宿主。
+1. 将不同入口的输入转换为统一的会话请求。
+2. 将不同模型供应商的请求和响应转换为统一格式。
+3. 控制模型可调用的工具和可访问的资源。
+4. 管理长对话、后台任务和并行 Agent 的状态。
+5. 保存完整历史，并在中断后恢复到一致状态。
 
-## 2. 五层架构
+## 2. 架构分层
 
 ```mermaid
 flowchart TB
-  UI[入口与宿主层
-CLI / TUI / Headless / SDK / Server / SSH]
-  ORCH[编排层
-REPL / QueryEngine / query loop / Task framework]
-  MODEL[模型与上下文层
-Prompt / Messages / Compact / Provider routing]
-  CAP[能力层
-Tools / Permissions / Hooks / MCP / LSP / Plugins]
-  INFRA[基础设施层
-Settings / Session JSONL / Auth / Telemetry / Filesystem]
-  UI --> ORCH
-  ORCH --> MODEL
-  ORCH --> CAP
-  MODEL --> INFRA
-  CAP --> INFRA
+  A[交互与入口层] --> B[会话编排层]
+  B --> C[上下文与模型层]
+  B --> D[工具与扩展层]
+  B --> E[Agent 与任务层]
+  B --> F[状态与持久化层]
+  G[安全与权限] --> A
+  G --> B
+  G --> D
+  G --> E
 ```
 
-### 2.1 入口与宿主层
+### 2.1 交互与入口层
 
-- `bin/openclaude`：安装后的 Node launcher。
-- `src/entrypoints/cli.tsx`：启动预处理和 fast path。
-- `src/main.tsx`：Commander 命令树、默认交互/打印模式分派。
-- `src/screens/REPL.tsx`：React/Ink 交互宿主。
-- `src/entrypoints/sdk/index.ts`、`src/QueryEngine.ts`：可编程 API。
-- `src/server/`、`src/grpc/`、`src/ssh/`、`src/remote/`：其他运行形态。
+该层负责接收输入和交付输出。它包含终端交互、单次 Headless 调用、结构化输入输出、SDK、远程会话、SSH 和服务端接口。
 
-### 2.2 编排层
+各入口具有独立的输入形式和展示方式。它们向会话编排层提供相同的核心信息：用户内容、会话标识、工作目录、模型选择、权限模式和中止信号。
 
-- `src/query.ts`：主 Agent 的状态机式生成器。
-- `src/QueryEngine.ts`：SDK/非 React 宿主中的查询编排。
-- `src/services/tools/toolOrchestration.ts`：工具批次与并发。
-- `src/Task.ts`、`src/tasks/`：后台任务统一状态和 kill 接口。
-- `src/tools/AgentTool/`：子代理和 teammate 分派。
+### 2.2 会话编排层
 
-### 2.3 模型与上下文层
+该层负责推进一次会话请求。主要职责包括：
 
-- `src/context.ts` 与 `src/context/`：系统/用户上下文。
-- `src/utils/attachments.ts`：按轮注入的环境附件。
-- `src/services/api/`：API client、传输适配、重试、错误映射。
-- `src/integrations/`：descriptor-first 的 provider/model 元数据。
-- `src/services/compact/`：主动、被动和局部压缩。
+- 接收用户消息和系统通知。
+- 请求上下文模块准备模型输入。
+- 调用模型并消费流式结果。
+- 识别文本回答和工具请求。
+- 调度工具或子 Agent。
+- 将工具结果加入下一次模型请求。
+- 处理重试、压缩、中止和结束。
 
-### 2.4 能力层
+会话编排层只依赖统一的消息和工具格式。模型供应商、界面和具体工具的差异由其他模块处理。
 
-- `src/Tool.ts`、`src/tools.ts`、`src/tools/`：工具协议和实现。
-- `src/utils/permissions/`、`src/hooks/useCanUseTool.tsx`：权限决策。
-- `src/services/mcp/`：MCP 连接和远端工具动态注册。
-- `src/utils/plugins/`：插件安装、发现、组件加载和热刷新。
-- `src/utils/hooks.ts`：生命周期 Hook。
-- `src/services/lsp/`：语言服务器管理。
+### 2.3 上下文与模型层
 
-### 2.5 基础设施层
+上下文模块决定模型在本轮可以看到的内容。内容来源包括系统规则、会话历史、项目指令、文件信息、附件、技能、记忆和工具定义。
 
-- `src/utils/settings/`：多来源设置与策略控制。
-- `src/utils/sessionStorage.ts`：JSONL transcript、索引和恢复。
-- `src/bootstrap/state.ts`：进程/会话级 bootstrap 状态。
-- `src/state/AppStateStore.ts`：交互运行时状态。
-- `src/utils/gracefulShutdown.ts`：清理、flush、终端恢复。
+模型接入模块负责选择 provider 和 model，构造目标 API 请求，并将流式响应转换为内部事件。会话编排层接收的事件包含文本片段、思考内容、工具请求、用量信息和错误信息。
 
-## 3. 最重要的数据结构
+### 2.4 工具与扩展层
 
-### 3.1 Message 是数据面的主干
+工具模块将模型请求转换为本地操作。每个工具声明自己的输入格式、权限检查、并发属性、执行方式和结果格式。
 
-对话采用结构化消息模型：
+扩展模块可以增加新工具、新命令和新的生命周期处理。MCP 提供远程工具和资源。插件打包命令、Agent、Skill、Hook、MCP 和 LSP 配置。Hook 在会话和工具流程的指定阶段运行。LSP 提供代码定义、引用和诊断信息。
 
-- `user`：文本、图片、`tool_result`、meta 指令。
-- `assistant`：文本、thinking、`tool_use`、usage、stop reason。
-- `attachment`：由系统动态注入，并作为消息参与上下文。
-- `system`：压缩边界、警告、API retry 等。
-- `progress`：UI/SDK 事件，通常不进入持久链。
-- tombstone、tool-use summary 等内部消息。
+### 2.5 Agent 与任务层
 
-模型协议要求每个 `tool_use.id` 对应一个后续 `tool_result.tool_use_id`。因此异常、中止、fallback 都必须补齐 synthetic result，不能简单丢弃半轮。
+该层管理需要独立上下文或较长执行时间的工作。
 
-### 3.2 Tool 是能力协议
+- 同步子 Agent 在父请求中运行，父请求等待结果。
+- 后台 Agent 注册任务后独立运行，父请求先获得任务 ID。
+- Teammate 具有长期团队身份、邮箱和计划审批流程。
+- Worktree 为并行修改提供独立文件目录。
+- 任务记录保存状态、进度、结果和停止方式。
 
-`Tool` 同时定义：
+### 2.6 状态与持久化层
 
-- 名称、描述、输入/输出 schema。
-- 启用状态和只读/并发安全属性。
-- `validateInput`、`checkPermissions`、`call`。
-- API tool result 映射。
-- UI 渲染和活动描述。
-- 结果上限和持久化策略。
+状态模块保存当前运行情况。持久化模块保存可以跨进程恢复的数据。
 
-工具执行由此形成可校验、可授权、可观察的事务。
+界面状态包括当前模型、权限请求、任务列表和视图状态。查询状态包括当前阶段、中止控制和恢复次数。任务状态包括进度、输出和通知状态。会话历史使用事件日志保存消息之间的父子关系。
 
-### 3.3 AppState 保存交互共享状态
+大型工具结果会保存到独立文件。会话消息保留预览和文件位置。该设计控制模型上下文和进程内存的大小。
 
-`AppStateStore` 保存 tasks、MCP clients/tools、权限上下文、todos、插件、provider/model、当前查看的 Agent 等。另有两类状态：
+### 2.7 安全与权限
 
-- `bootstrap/state.ts`：sessionId、cwd、成本累计、入口类型等进程级信息。
-- 模块级 store：command queue、各类 cache、manager singleton。
+安全模块贯穿所有层次。主要检查包括：
 
-阅读时必须问“这个状态属于 React 视图、整个会话，还是某次 query 的局部变量”。
+- 当前工作目录的信任状态。
+- 设置和扩展配置的来源。
+- 工具调用的允许、拒绝和确认规则。
+- 文件路径和符号链接解析结果。
+- Shell 命令及其参数。
+- 子进程的文件和网络访问范围。
+- 外部内容、凭据和日志的处理方式。
 
-## 4. Agent 循环的最小不变量
+## 3. 核心数据
 
-1. 同一 REPL 只允许一个本地主查询占有 `QueryGuard`。
-2. 一轮模型流可以生成多个 `tool_use`。只读且声明并发安全的连续工具可并行。
-3. 每个工具调用必须得到结果或 synthetic error/abort result。
-4. 权限模式、规则、Hooks 和工具自身检查都可能影响执行。
-5. 需要 follow-up 的工具结果会触发下一次模型请求。
-6. stop hook 可以要求模型继续。该路径必须保留防循环 guard。
-7. terminal reason 明确区分 completed、abort、model error、prompt-too-long、max-turns、step-limit、tool-failure-loop 等。
+### 3.1 消息
 
-## 5. 控制流和持久流分离
+消息是模块之间传递会话内容的主要格式。常见消息包括用户输入、模型回答、工具请求、工具结果、系统通知、进度和错误。
 
-- UI 实时 state 会频繁变化。JSONL 仅记录可恢复的 message/metadata。
-- `progress` 高频事件通常不参与 parent UUID 链。
-- 后台任务状态位于 `AppState.tasks`，重要的远端任务另写 sidecar 以支持进程重启恢复。
-- tool result 可能把大内容落盘，消息中仅保留预览/引用。resume 时避免重新加载原始巨型 blob。
+每条持久化消息具有唯一 ID 和父消息 ID。父子关系支持恢复、分支、回退和子 Agent 历史。
 
-## 6. 关键设计权衡
+### 3.2 工具请求与工具结果
 
-### 6.1 主循环选择 AsyncGenerator 的原因
+模型发出的每个工具请求都具有调用 ID。工具执行完成后，系统生成使用相同调用 ID 的结果。成功、失败和中止都要生成结果。完整配对可以保证下一次模型请求包含合法历史。
 
-AsyncGenerator 统一暴露最终结果和过程事件。API retry、stream delta、assistant message、tool progress、tool result、compact boundary 均可逐步 yield。TUI、Headless 和 SDK 可按宿主需要消费同一语义。消费过程可以在整轮结束前开始。
+### 3.3 会话状态
 
-### 6.2 多种状态存储的设计依据
+会话状态分为三类：
 
-单一全局 store 会造成以下问题：
+| 状态类型 | 保存内容 | 存续时间 |
+|---|---|---|
+| 交互状态 | 当前视图、对话框、输入和显示进度 | 当前界面会话 |
+| 运行状态 | 当前查询阶段、中止控制、任务进度 | 当前进程或当前请求 |
+| 持久状态 | 消息、设置、摘要、分支和文件快照 | 跨进程保留 |
 
-- 高频 stream 使整个 TUI 重渲染。
-- 后台 detached task 捕获错误的 React closure。
-- SDK 并发 query 相互污染。
-- command queue 的通知被 React 批处理漏掉。
+三类状态分别更新。高频流式文本不会触发所有持久化逻辑。后台任务不会依赖某个界面组件继续存在。恢复流程只读取已经保存的数据。
 
-项目因此使用 `useSyncExternalStore`、AsyncLocalStorage、局部状态机和 root `setAppStateForTasks`，以明确隔离和可见性。
+## 4. 主工作流程
 
-### 6.3 Provider 接口的抽象边界
+```mermaid
+flowchart TD
+  A[接收输入] --> B[检查会话与权限状态]
+  B --> C[组装模型上下文]
+  C --> D[选择模型并发送请求]
+  D --> E[接收流式事件]
+  E --> F{模型结果类型}
+  F -->|文本回答| G[检查结束条件]
+  F -->|工具请求| H[校验并授权工具]
+  H --> I[执行工具]
+  I --> J[保存工具结果]
+  J --> C
+  G --> K[运行结束处理]
+  K --> L[保存并展示结果]
+```
 
-元数据采用 descriptor-first 结构。实际协议保留 thinking signature、Gemini thought、OpenAI responses、Anthropic native web search、Bedrock/Vertex auth、Azure headers 等外部契约差异。项目统一上层消息语义，并显式处理传输例外。最低公分母接口会丢失供应商能力。
+### 4.1 输入阶段
 
-## 7. 改动层级判断
+入口模块将文本、附件、命令和远程事件转换为会话输入。系统读取当前会话的运行状态，并根据输入类型决定立即执行、排队或更新当前任务。
 
-- 增加模型/默认 URL/展示标签：优先改 `src/integrations/` descriptor。
-- 改 HTTP 请求体/stream 解析：改 provider transport/shim。
-- 改工具授权：修改 permission pipeline。UI 仅负责呈现授权状态。
-- 改背景任务展示：先看 task state predicate，再看组件。
-- 改恢复行为：同时检查写入链和 `loadTranscriptFile` 重建。
-- 改交互并发：先证明 `QueryGuard` 和 command queue 的状态转换保持原子性。
+### 4.2 上下文阶段
 
-下一章：[01 仓库、构建与运行时](01-repository-build-runtime.md)。
+上下文模块选择当前有效的历史消息，并加入系统规则、项目指令、技能、记忆和工具定义。上下文超过模型容量时，系统缩短旧历史或生成摘要。
+
+### 4.3 模型阶段
+
+模型接入模块根据当前配置选择 provider 和 model。请求转换完成后，模型流式事件会逐步返回。界面可以立即显示文本进度。会话编排层同时收集完整消息。
+
+### 4.4 工具阶段
+
+模型返回工具请求时，系统依次完成参数校验、Hook、权限判断、用户确认和沙箱准备。可以并发的只读工具会组成并发批次。具有写入影响或顺序要求的工具会串行执行。
+
+### 4.5 继续与结束
+
+工具结果加入上下文后，系统再次请求模型。模型给出最终回答、达到步数限制、收到中止信号或遇到不可恢复错误时，本轮结束。结束处理会保存消息、运行结束 Hook、更新任务和释放资源。
+
+## 5. 后台工作流程
+
+```mermaid
+sequenceDiagram
+  participant P as 主会话
+  participant T as 任务管理
+  participant A as 后台 Agent
+
+  P->>T: 创建后台任务
+  T-->>P: 返回任务 ID
+  T->>A: 启动独立上下文
+  A->>T: 持续更新进度和输出
+  A-->>T: 返回最终结果
+  T->>P: 加入任务完成通知
+  P->>P: 在当前步骤结束后处理通知
+```
+
+后台 Agent 与主会话共享必要的任务基础设施，并拥有独立的消息上下文。用户取消主会话输入时，后台任务可以继续运行。用户明确停止任务时，任务管理模块会传播中止信号。
+
+## 6. 恢复工作流程
+
+系统使用追加式事件日志保存会话。新事件不会覆盖旧事件。恢复时，系统选择目标末端事件，并沿父事件 ID 重建当前消息链。
+
+对话分支会从历史事件创建新链。文件回退会应用单独保存的文件快照。上下文压缩会记录摘要和压缩位置。大型结果文件保持原路径引用。
+
+## 7. 主要设计选择
+
+### 7.1 统一内部消息格式
+
+各 provider 的消息字段和流式事件存在差异。模型接入模块负责转换。会话编排、工具和持久化模块只处理内部格式。新增 provider 时，修改范围集中在模型配置和 API 适配模块。
+
+### 7.2 流式事件驱动
+
+模型文本、工具进度、重试和任务通知会持续产生。系统逐步发布事件。终端和 SDK 可以在整轮结束前处理已经产生的内容。
+
+### 7.3 按用途分离状态
+
+界面状态、查询状态、后台任务状态和持久化历史具有不同的更新频率和存续时间。独立存储可以减少无关更新，并避免后台任务依赖界面生命周期。
+
+### 7.4 追加式会话日志
+
+追加式日志保留每次状态变化。恢复、分支和回退都可以通过父事件关系表达。损坏行可以单独跳过。审计过程可以查看完整历史。
+
+### 7.5 分层安全检查
+
+目录信任控制项目配置加载。Permission 控制具体工具调用。路径检查限制文件范围。Sandbox 限制子进程。网络检查限制目标地址。各项检查覆盖不同风险。
+
+## 8. 章节关系
+
+启动流程见 [02 启动流程](02-entrypoints-startup.md)。会话执行见 [04 会话执行流程](04-query-agent-loop.md)。模块级细节分别位于 05 至 14 章。源码路径和术语位于 [17 源码索引与术语](17-source-map-glossary.md)。

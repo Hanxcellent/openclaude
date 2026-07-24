@@ -1,182 +1,158 @@
-# 02. 入口与启动链路
+# 02. 启动流程
 
-## 1. 安装后启动链
+## 1. 启动目标
 
-```mermaid
-sequenceDiagram
-  participant Shell
-  participant Launcher as bin/openclaude
-  participant CLI as dist/cli.mjs
-  participant Main as main.tsx
-  participant Setup
-  participant Host as REPL/print/subcommand
-  Shell->>Launcher: openclaude argv
-  Launcher->>Launcher: Node/version/install checks
-  Launcher->>CLI: import bundled CLI
-  CLI->>Main: main()
-  Main->>Main: early argv rewrite + mode detection
-  Main->>Setup: preAction init/migrations/settings
-  Main->>Host: dispatch selected mode
-```
+启动流程负责建立一个可以安全处理请求的运行环境。完成启动后，系统需要具备以下信息和资源：
 
-`src/entrypoints/cli.tsx` 负责必须早于重型 imports 的启动工作。`src/main.tsx` 是默认命令树和主要分派中心。
+- 当前运行入口和输出格式。
+- 工作目录及其信任状态。
+- 合并后的有效设置。
+- 当前 provider、model 和认证方式。
+- 新会话或恢复会话的状态。
+- 当前入口可用的工具和扩展。
+- 日志、任务和中止处理能力。
 
-## 2. `main.tsx` 的早期副作用
-
-在大量模块加载前，代码启动：
-
-- startup profiler checkpoint。
-- MDM managed settings 原始读取。
-- macOS keychain OAuth/API key 预取。
-
-这样把慢 I/O 与模块解析并行。随后：
-
-- 防止 Windows 从当前目录隐式执行同名命令。
-- 注册 warning/exit/SIGINT 行为。
-- 处理 URL/deep link、assistant、SSH 等需要改写 argv 的入口。
-- 根据 TTY、参数和环境判断 interactive。
-- 设置 client type 和 session source。
-- eager load `--settings` 等会影响初始化的 flag。
-
-安全含义：trust 之前不能启动项目提供的 LSP/Hook/插件可执行代码。
-
-## 3. Commander 初始化
-
-`run()` 创建 Commander program，并通过 `preAction` 对真实命令统一做：
-
-1. 等待 MDM 和 keychain 预取。
-2. `init()` 加载基础环境。
-3. 初始化 telemetry sinks。
-4. 应用 `--plugin-dir`。
-5. 运行版本化 migrations。
-6. 异步拉取 remote managed settings 和 policy limits。
-7. 可选启动 settings sync。
-
-展示 `--help` 不运行这些重初始化，减少延迟和副作用。
-
-## 4. 默认命令参数分类
-
-### 4.1 宿主/输出
-
-- `-p/--print`：非交互一次或 stream-json 输入。
-- `--input-format`、`--output-format`。
-- `--include-partial-messages`。
-- `--replay-user-messages`。
-- `--no-session-persistence`。
-
-### 4.2 模型/provider
-
-- `--model`、`--provider`、`--fallback-model`、`--effort`。
-- provider env file。
-- API-side task budget。
-- beta headers。
-
-### 4.3 能力/安全
-
-- `--tools`、`--allowed-tools`、`--disallowed-tools`。
-- `--permission-mode`、危险跳过权限开关。
-- `--add-dir`。
-- `--mcp-config`、`--strict-mcp-config`。
-- `--plugin-dir`、`--disable-slash-commands`。
-
-### 4.4 会话
-
-- `--continue`：当前项目最近会话。
-- `--resume [id]`：指定或交互选择。
-- `--fork-session`：复用上下文并生成新 sessionId。
-- `--resume-session-at`：只恢复到某 assistant message。
-- `--rewind-files`：根据 file-history snapshot 恢复工作区。
-
-### 4.5 工作区与协作
-
-- `--worktree [name]`、`--tmux`。
-- agent/team 内部身份参数。
-- remote/direct-connect/SSH 特有配置。
-
-## 5. 默认 action 的主要阶段
-
-默认 action 可以划分为以下阶段：
+## 2. 总体顺序
 
 ```mermaid
 flowchart TD
-  A[解析选项] --> B[设置 bare/assistant/teammate 特殊模式]
-  B --> C[解析 model/provider/permission/settings]
-  C --> D[setup: auth, tools, commands, agents, plugins]
-  D --> E[恢复或新建 session]
-  E --> F[获取 MCP 初始 config/clients]
-  F --> G{print 模式}
-  G -- yes --> H[print.ts / QueryEngine]
-  G -- no --> I[workspace trust + setup screens]
-  I --> J[初始化 LSP/延迟服务]
-  J --> K[AppStateProvider + REPL]
+  A[读取启动参数] --> B[选择运行入口]
+  B --> C[加载安全基础配置]
+  C --> D[检查工作目录信任]
+  D --> E[加载完整项目配置]
+  E --> F[选择模型并认证]
+  F --> G[创建或恢复会话]
+  G --> H[加载工具和扩展]
+  H --> I[启动界面或接口]
+  I --> J[接收请求]
 ```
 
-### 5.1 `--bare`
+## 3. 参数与入口选择
 
-把 `CLAUDE_CODE_SIMPLE=1` 设在 `setup()` 前，会使 CLAUDE.md 自动发现、Hooks、LSP、插件同步、auto-memory 等 gate 进入轻量路径。显式提供的 skills、system prompt、MCP、agents 和 plugin dir 保持可用。该选项定义最小副作用模式。工具能力由显式配置决定。
+启动参数首先决定运行形态。入口选择会影响后续加载内容。
 
-### 5.2 trust gate
+| 参数类别 | 影响 |
+|---|---|
+| 输出与输入 | TUI、普通文本、JSON、流式 JSON |
+| 模型 | provider、model、推理强度、fallback |
+| 会话 | 新建、继续、恢复、分支 |
+| 权限 | 默认审批方式、沙箱、可访问目录 |
+| 扩展 | MCP、插件、Agent、Skill |
+| 远程 | Remote、SSH、后台进程 |
 
-项目 settings 和 `.claude/` 内容属于仓库控制，可能执行命令。交互模式在用户信任前不会启动危险扩展。项目也避免仅凭 `.claude/settings.json` 自动开启 assistant/危险模式。
+帮助、版本和部分管理命令可以直接返回结果。它们不需要加载完整会话、模型和终端界面。
 
-### 5.3 恢复先于渲染
+## 4. 安全基础配置
 
-resume 需要在 REPL 初始 state 创建前计算：
+目录信任确认前，系统只加载可信来源中的基础设置。该阶段可以读取用户设置、管理员策略和启动参数。项目目录中的 Hook、MCP、命令、插件和危险环境变量暂不生效。
 
-- 消息链、content replacement。
-- file history / attribution / todos。
-- agent setting/name/color。
-- provider/model/session mode。
-- worktree cwd。
-- active goal 和远端任务 sidecar。
+全局证书等需要在首次网络连接前确定的配置会在此阶段处理。项目配置不能在目录信任确认前改变证书、代理、可执行路径和动态库加载方式。
 
-这避免组件 mount 后再逐项修补造成短暂错误状态。
+## 5. 工作目录信任
 
-## 6. 交互启动
+交互模式会向用户展示当前目录可能启用的项目能力，包括 Hook、MCP、Shell 规则、项目命令、Skill、凭据 helper 和危险环境变量。
 
-`interactiveHelpers.tsx` 提供公共骨架：
+用户接受目录后，系统加载完整项目配置。用户拒绝目录后，程序退出或保持受限状态。Headless 和 bypass 模式由调用方承担目录信任责任。
 
-- `showSetupScreens()`：信任、认证、危险模式、MCP project approval 等对话框。
-- `showSetupDialog()`：包装 `AppStateProvider + KeybindingSetup`。
-- `renderAndRun()`：开始 deferred prefetch，等待 Ink root 退出，然后 graceful shutdown。
-- `getRenderContext()`：统一终端错误处理和 exit behavior。
+目录信任只控制项目配置加载。具体工具调用还要经过权限、路径和沙箱检查。
 
-最终 REPL 被包在 AppState、键位、MCP connection manager 等 providers 中。
+## 6. 配置合并
 
-## 7. 非默认子命令
+设置按来源和优先级合并。主要来源包括管理员策略、启动参数、会话设置、本地项目设置、项目共享设置和用户设置。
 
-Commander 同时注册：
+合并过程会完成以下操作：
 
-- `mcp`：list/get/add/remove/auth/doctor/import。
-- `plugin` / `plugins`：marketplace、install、enable、update、validate。
-- `auth`：Anthropic 及特定 provider OAuth。
-- `agents`、`skills`。
-- `doctor`、`update`、`install`。
-- `server`、`open`、`ssh`、`assistant`（按 feature）。
-- task report、auto-mode 等构建特定命令。
+1. 解析配置文件。
+2. 校验字段类型和允许值。
+3. 按优先级选择或合并字段。
+4. 保留每个安全相关字段的来源。
+5. 生成当前会话使用的有效配置。
 
-这些 handler 多用动态 import，避免默认交互启动加载整棵命令实现。
+配置错误会包含来源和字段位置。强制策略错误会阻止启动。可选扩展配置错误可以形成警告并跳过对应扩展。
 
-## 8. 退出链
+## 7. 模型与认证
 
-`gracefulShutdown` 承担以下退出职责：
+系统根据启动参数、会话设置、provider profile 和默认值选择 provider 与 model。模型选择完成后，认证模块读取 API key、OAuth、云平台凭据、系统安全存储或外部 helper。
 
-- 防重入并设置 failsafe。
-- 执行 cleanup registry。
-- 停止任务/服务/子进程。
-- flush transcript 和 deferred config writes。
-- 执行 SessionEnd hooks（有较短 timeout）。
-- 恢复 raw mode、光标、alternate screen。
-- 交互模式打印 resume hint。
-- 最终强制退出。
+认证成功后，系统建立模型 API client。模型名称、上下文窗口、工具能力、视觉能力和推理能力会加入当前会话配置。
 
-同步退出路径作为终端断开或 process exit 的保底，能做的清理更有限。
+## 8. 会话创建与恢复
 
-## 9. 快速追踪入口的方法
+### 8.1 新会话
 
-- 参数失效定位：检查 `main.tsx` 注册、早期 argv rewrite 和 action 解构三处。
-- 某功能的初始化时机：查 `preAction`、`setup()`、`startDeferredPrefetches()`。
-- 交互和 print 具有不同的宿主行为。相关分析需要比较 `REPL.tsx`、`print.ts` 和 `query.ts`。
-- 发布包缺模块：查 `scripts/build.ts` feature definitions 和 externals。
+新会话会生成 session ID，记录原始工作目录，并初始化消息历史、任务表、文件历史和大型结果存储。
 
-下一章：[03 状态与数据模型](03-state-and-data-model.md)。
+### 8.2 继续最近会话
+
+Continue 会选择符合当前项目和入口条件的最近会话。系统重建当前消息链，并恢复模型、工作目录和会话元数据。
+
+### 8.3 恢复指定会话
+
+Resume 根据 session ID 或用户选择加载历史。恢复流程会排除损坏事件和无效分支，并应用上下文压缩、内容替换和文件历史记录。
+
+### 8.4 分支会话
+
+分支会话从指定历史消息创建新的消息链。原会话保持不变。新会话记录来源会话和分支位置。
+
+## 9. 工具与扩展加载
+
+会话准备完成后，系统装配当前入口可用的能力：
+
+- 内置文件、Shell、搜索和任务工具。
+- 当前配置允许的 Agent。
+- MCP Server 提供的工具和资源。
+- 已启用插件提供的命令、Skill、Hook 和 LSP。
+- SDK 调用方提供的工具和 MCP Server。
+
+工具装配会应用功能开关、权限规则、入口限制和组织策略。被禁止的工具不会暴露给模型。
+
+## 10. 入口启动
+
+### 10.1 终端交互
+
+终端模式启动 React/Ink 界面，订阅会话状态，并建立输入、滚动、对话框和取消处理。
+
+### 10.2 Headless
+
+Headless 模式创建会话状态和查询循环，并通过标准输入输出交换文本或结构化事件。权限请求需要预设规则或外部回调。
+
+### 10.3 SDK
+
+SDK 创建独立会话对象，并将事件返回给调用应用。调用应用负责消费事件、中止请求和关闭会话。
+
+### 10.4 远程与服务端
+
+远程入口在认证后建立消息通道。服务端入口注册可调用方法。工具执行位置由运行会话编排模块的进程决定。
+
+## 11. 精简模式
+
+精简模式减少自动加载行为。项目指令自动发现、Hook、LSP、插件同步、自动记忆和后台预取可以跳过。调用方明确提供的模型、MCP、Agent、Skill 和目录设置继续生效。
+
+精简模式适用于脚本、诊断和受控自动化。调用方需要明确提供所需能力和凭据。
+
+## 12. 退出流程
+
+正常退出、中止信号和终端断开会进入统一退出流程：
+
+1. 停止接收新请求。
+2. 中止当前模型和工具操作。
+3. 通知后台任务停止或脱离当前会话。
+4. 保存待写入的会话事件。
+5. 关闭 MCP、LSP、远程连接和文件监听器。
+6. 清理终端状态和临时资源。
+7. 返回对应退出状态。
+
+重复退出信号不会重复执行资源清理。
+
+## 13. 启动失败的处理
+
+| 失败位置 | 系统行为 |
+|---|---|
+| 参数或设置无效 | 显示来源和字段错误并停止 |
+| 目录未获信任 | 停止加载项目能力 |
+| 模型认证失败 | 阻止模型请求并显示认证信息 |
+| 可选 MCP 或 LSP 失败 | 记录警告并继续核心会话 |
+| 会话日志部分损坏 | 跳过损坏事件并恢复可确认历史 |
+| 强制安全能力不可用 | 停止启动 |
+
+下一章说明启动完成后各类状态的保存位置和协作方式。

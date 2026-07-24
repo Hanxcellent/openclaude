@@ -1,189 +1,176 @@
-# 05. 上下文、Prompt、记忆与压缩
+# 05. 上下文与记忆
 
-## 1. 模型实际接收的内容
+## 1. 模块职责
 
-一次请求由多类上下文组成。概念上包含：
+上下文模块决定每次模型请求包含的内容。它需要在信息完整、token 容量、缓存稳定和会话可恢复之间取得平衡。
 
-```text
-system prompt
-+ system context（环境/能力/日期/cwd 等）
-+ user context（CLAUDE.md、规则、用户偏好）
-+ active messages after compact boundary
-+ turn attachments（IDE、git、todos、memory、skills 等）
-+ tool definitions filtered for this request
+模型输入由以下部分组成：
+
+1. 系统规则。
+2. 用户和项目指令。
+3. 当前会话历史。
+4. 文件与附件信息。
+5. Skill 和命令生成的内容。
+6. 任务通知和外部消息。
+7. 工具定义。
+8. 记忆与上下文摘要。
+
+## 2. 上下文组装顺序
+
+```mermaid
+flowchart TD
+  A[系统规则] --> B[用户与项目指令]
+  B --> C[会话历史]
+  C --> D[附件与文件信息]
+  D --> E[Skill 与记忆]
+  E --> F[任务通知]
+  F --> G[工具定义]
+  G --> H[Token 检查]
+  H --> I[模型请求]
 ```
 
-最终由 API adapter 转成目标 provider 的 role/content/tool schema。
+固定规则放在前部。会话变化内容放在后部。该顺序可以提高 provider prompt cache 的复用率。
 
-## 2. System Prompt 构造
+## 3. 系统规则
 
-`src/context.ts`、`src/context/` 和工具 prompt 共同构造系统提示。主要内容：
+系统规则定义 Agent 的基本行为和当前运行环境。主要内容包括：
 
-- Code Agent 身份和行为约束。
-- 可用工具及调用规则。
-- 文件/命令安全说明。
-- 环境信息和 working directories。
-- permission mode 特定规则。
-- team/coordinator/assistant addendum。
-- custom `--system-prompt` 或 append prompt。
-- output style。
+- 工具使用规则。
+- 文件和命令安全要求。
+- 当前工作目录和平台信息。
+- 权限模式和沙箱状态。
+- 输出格式要求。
+- Agent 身份和协作方式。
+- 当前可用功能。
 
-工具 description 是 API tool schema 的一部分。动态变化会破坏 provider prompt cache。因此 AgentTool 把动态 agent list 作为 message attachment。工具 description 保持稳定。
+工具描述也是模型请求的一部分。工具描述保持稳定。动态 Agent、MCP 和任务信息通过单独上下文加入。
 
-## 3. 用户与项目指令
+## 4. 用户与项目指令
 
-项目会发现不同层级的指令文件及 include：
+指令来源包括用户级说明、项目级说明、工作目录中的规则文件和显式包含的文件。
 
-- 用户级规则。
-- 项目级 `CLAUDE.md` / 兼容项目指令。
-- local/private rules。
-- managed rules。
-- `--add-dir` 对应目录指令。
+加载过程会完成以下检查：
 
-重要边界：
+1. 按目录层级发现指令文件。
+2. 解析 include 引用。
+3. 防止循环引用和路径逃逸。
+4. 按来源和目录范围确定适用内容。
+5. 记录来源，支持诊断和恢复。
 
-- 项目指令在 trust 前不能触发可执行扩展。
-- include/嵌套遍历有路径和循环保护。
-- read-only Explore/Plan 子代理可省略 ClaudeMd，减少无关 token。
-- compaction 后需要重新附上当前有效的项目规则。
+工作目录变化后，目录相关指令会重新计算。子 Agent 根据自己的工作目录和职责获得适用指令。
 
-Hooks 的 `InstructionsLoaded` 事件可观察指令来源和加载原因。trust 继续约束该事件。
+## 5. 附件
 
-## 4. Attachments 的懒注入
+附件用于按需加入结构化上下文。常见类型包括：
 
-`getAttachmentMessages()` 按当前轮和上下文状态生成附件。典型策略：
+- 图片和文档。
+- 文件片段和读取结果。
+- 项目指令。
+- Skill 内容。
+- Agent 定义。
+- 任务完成通知。
+- 计划和待办状态。
 
-- 第一个 queued command 注入一次 turn-level attachment，后续同批命令不重复。
-- memory 预取与模型请求前准备并行，未完成时不阻塞，可在后续循环消费。
-- 已被 Read/Write/Edit 触达的 memory/file 不重复注入。
-- 相同 memory attachment 去重。
-- 计划模式退出、auto mode 退出只在需要时加一次说明。
-- background agent/async task 状态在 compact 后重建。
+附件可以延迟展开。系统只在构造当前模型请求时生成最终内容。该方式减少长期保存在消息中的重复文本，并支持压缩后重新构造动态信息。
 
-## 5. 文件上下文与 Read cache
+## 6. 文件上下文
 
-ToolUseContext 带 `readFileState`：记录模型最近读取的文件内容和时间。用途：
+文件工具返回带行号或结构化片段的内容。系统记录已经读取的文件和版本状态。Edit 和 Write 可以利用该状态检查操作所依据的文件版本。
 
-- Edit/Write 前的 read-before-write 语义。
-- compaction 后选择最近文件恢复。
-- 避免重复 memory 注入。
-- 子代理 fork 时 clone 父 read cache。独立子代理则用有大小上限的新 cache。
+大型文件按范围读取。图片、PDF 和 Notebook 使用专用解析。文件内容受到单次结果和会话总量限制。
 
-压缩后最多恢复有限文件，每文件和总 token 都有预算，防止刚压缩完又把大文件全部塞回。
+工作目录和附加目录决定默认文件访问范围。文件路径还要经过权限和符号链接检查。
 
-## 6. Skills 与 Commands
+## 7. Skill 与命令
 
-Skill 通常是 Markdown 指令，可来自：
+Skill 提供领域指令、资源和可用工具说明。模型根据当前任务按需加载 Skill。加载后的文本进入上下文。Skill 触发的操作通过工具系统执行。
 
-- 用户/项目 skills 目录。
-- 插件。
-- bundled skills。
-- MCP skills（feature 下）。
+Prompt command 会生成新的用户提示。Local command 在本地直接执行。需要终端界面的命令只在交互模式运行。
 
-调用 skill 时：
+## 8. 记忆
 
-1. slash command 解析其 frontmatter。
-2. 可改变 allowed tools、model、effort。
-3. 内容作为消息/附件进入上下文。
-4. `bootstrap/state` 记录 invoked skill。
-5. compaction 后以有上限的 attachment 恢复。
-6. 子代理结束时清理 scoped skill，避免全局 map 无界增长。
+记忆用于保存跨轮次或跨会话有价值的信息。主要类型包括：
 
-插件 skill 名字可 namespaced。Agent frontmatter 的 bare skill name 通过 exact、plugin prefix、suffix 三步解析。
+- 当前会话中需要持续保留的任务事实。
+- 项目级约定和长期说明。
+- 用户选择的长期偏好。
+- Agent 或团队的工作记录。
 
-## 7. Token 估算与警告
+记忆内容具有来源和范围。项目记忆不会自动应用到无关目录。子 Agent 只读取职责和目录允许的记忆。
 
-`tokenCountWithEstimation()` 优先使用最近 assistant usage。没有可靠 usage 时估算。需要区别：
+## 9. Token 管理
 
-- input usage 通常是该请求完整上下文。
-- output usage 是该轮输出。
-- cache creation/read token 计入输入规模。
-- snip 移除消息后，旧 usage 可能高估，需要减去已知 freed tokens。
+上下文模块估算每次请求的输入 token，并结合模型上下文窗口和预期输出量判断容量。
 
-UI 用 `calculateTokenWarningState()` 展示临近上下文上限。query 还会做 blocking guard，避免在 auto-compact breaker 激活时继续发送必然过大的请求。
-
-## 8. Auto Compact
-
-`services/compact/autoCompact.ts`：
-
-- 有效上下文窗口 = 模型 context window 减预留 summary output。
-- 默认在窗口下方保留 30k token buffer。小窗口使用安全 floor。
-- 可由 memory pressure 强制触发。
-- compact/session-memory 子查询有递归 guard。
-- 连续失败 3 次触发 circuit breaker。
-- breaker cooldown 默认 5 分钟，之后 half-open 再试。
-
-跟踪 state 包括 turnId、compaction 状态、连续失败、下次 retry 时间和 force reason。该 state 必须随 query state 传递。
-
-## 9. Compact 过程
-
-`compactConversation()` 的步骤：
-
-1. 判断有足够消息。
-2. 执行 PreCompact hooks，合并用户与 Hook 指令。
-3. 去掉图片和压缩后会重注入的附件，减少 summary 请求。
-4. 调模型生成结构化 conversation summary。
-5. 遇到 compaction 自身 prompt-too-long，按 API round group 从头截断，最多重试。
-6. 创建 compact boundary。
-7. 保留必要的 recent messages。
-8. 创建文件、plan、skill、plan-mode、async-agent 等恢复附件。
-9. 执行 PostCompact hooks。
-10. 写 transcript boundary 和 metadata。
-
-重建顺序固定：
-
-```text
-boundary → summary messages → preserved recent messages
-→ restored attachments → hook results
+```mermaid
+flowchart TD
+  A[估算当前上下文] --> B{容量状态}
+  B -->|充足| C[发送请求]
+  B -->|接近上限| D[显示警告]
+  B -->|超过阈值| E[缩减或压缩]
+  E --> A
 ```
 
-顺序变化会影响 parent chain 和 prompt cache。
+输入规模包括普通消息、工具定义、系统规则、图片、缓存创建 token 和缓存读取 token。输出 token 单独统计。
 
-## 10. Compact Boundary 与持久化
+## 10. 自动压缩
 
-Boundary 表示旧上下文不再进入 active chain。若保留了边界前的 recent messages，boundary 会记录 preserved segment anchor。resume 时 `applyPreservedSegmentRelinks()` 把这些物理上位于边界前的消息接到 summary 后。
+上下文接近模型上限时，系统会压缩较早历史。压缩目标包括：
 
-失败时 fail closed：若 relink 无法证明安全，不应随意把孤立旧消息接入主链。
+- 保留用户任务和当前目标。
+- 保留关键决定和文件变化。
+- 保留未完成任务和未配对工具调用。
+- 删除重复进度和低价值细节。
+- 生成可供模型继续工作的结构化摘要。
 
-## 11. Reactive Compact 和 Context Collapse
+压缩后，后续请求包含摘要和近期消息。完整历史继续保存在会话日志中。
 
-### 11.1 Context Collapse
+## 11. 压缩流程
 
-可先把已 staged 的大上下文片段提交为较小表示。遇到真实 413/prompt-too-long 时，先 drain staged collapse。这比全局总结保留更多粒度。
+1. 选择需要压缩的历史范围。
+2. 保留近期消息和未完成工具交互。
+3. 生成任务目标、关键事实、文件状态和后续事项摘要。
+4. 校验保留消息与工具结果配对。
+5. 写入摘要和压缩位置。
+6. 重新构造当前消息链。
+7. 重试原模型请求。
 
-### 11.2 Reactive Compact
+压缩失败具有次数限制。连续失败后，系统暂停自动压缩，防止持续产生相同请求。
 
-当 provider 明确拒绝上下文或媒体大小时：
+## 12. 局部缩减
 
-- 只尝试一次。
-- 对 media error，压缩输入时会剥离图片。
-- 成功后 yield 新 boundary/summary 并重试原 turn。
-- preserved tail 含有超大 media 时，第二次错误直接透出，防止循环。
+系统还可以使用更轻量的缩减方式：
 
-### 11.3 Microcompact / Snip / Tool result replacement
+| 方式 | 处理内容 | 适用场景 |
+|---|---|---|
+| Context collapse | 分阶段缩短指定上下文片段 | 大段结构化内容 |
+| Microcompact | 删除或缓存旧工具内容 | 工具结果较多 |
+| Snip | 明确移除选定消息片段 | 已确认无后续价值的内容 |
+| Result replacement | 将大型工具结果替换为预览和文件位置 | 输出超过上下文预算 |
 
-- microcompact 删除或缓存旧 tool content，生成边界说明。
-- snip 显式移除部分消息，恢复时应用 removal。
-- 大工具结果写入磁盘，消息中保留 preview。
-- content replacement 决策写 JSONL，resume/sidechain 需要重放相同替换以保持 prompt cache 前缀稳定。
+每次缩减都会写入会话日志。恢复会话时，系统重新应用相同处理。
 
-## 12. Prompt Cache
+## 13. Prompt Cache
 
-缓存有效依赖请求前缀稳定：
+Provider prompt cache 可以复用稳定的请求前缀。系统通过以下方式提高命中率：
 
-- system prompt 和 tool schema 不应无故动态变化。
-- agent list 从 tool description 移到 message 可减少 schema cache bust。
-- compact 后 cache 前缀自然改变。
-- fallback 到不同 provider/model 时 thinking 与 cache 前缀不一定可复用。
-- content replacement 在 resume 时必须一致。
-- Anthropic native compatible 路径才适合共享某些 compaction cache。
+- 固定系统规则和工具顺序。
+- 将动态信息放在稳定前缀之后。
+- 在恢复时重放相同的内容替换。
+- 切换 provider 或 model 时清理不兼容缓存信息。
 
-## 13. 特殊恢复说明
+缓存只影响请求性能和费用。会话正确性不依赖缓存存在。
 
-- provider 报 context window exceeded：强制 compact 并重试一次。
-- compact 无法缩小：给用户 `/compact`、撤销大输出或 `/new` 建议。
-- auto-compact breaker 冷却中且已超阈值：在发请求前停止，以避免 storm。
-- max output token：先提高 cap（gate 下），再用 meta nudge 续写，最多三次。
-- API task budget 在 compact 后扣除已消耗上下文，不能被压缩“重置”。
+## 14. 恢复后的上下文
 
-下一章：[06 模型供应商与协议适配](06-provider-model-transport.md)。
+恢复会话时，系统读取当前消息链、最近压缩摘要、保留消息、内容替换记录和记忆状态。项目规则会根据当前工作目录重新加载。
+
+恢复结果需要满足以下条件：
+
+- 工具请求和结果完整配对。
+- 摘要后的消息顺序正确。
+- 大型结果引用保持可访问状态。
+- 当前模型可以接收保留的 thinking 和 media 内容。
+- 损坏或无法验证的旧消息不会进入请求。
+
+下一章说明模型选择和不同供应商 API 的转换方式。

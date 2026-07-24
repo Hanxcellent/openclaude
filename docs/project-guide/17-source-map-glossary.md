@@ -1,8 +1,8 @@
-# 17. 源码导航、术语表与学习路线
+# 17. 附录：源码索引与术语
 
-本章提供按问题定位源码的索引。源码持续演进。检索应优先使用导出符号和数据类型。固定行号仅表示当前快照位置。
+本附录面向需要查证实现细节的读者。主报告不依赖本章内容。本章提供按主题定位源码的索引和术语说明。源码持续演进，检索应优先使用导出符号和数据类型。
 
-## 17.1 最小源码主干
+## 17.1 主流程源码路径
 
 第一次只读以下路径，就能建立端到端骨架：
 
@@ -20,64 +20,64 @@ bin/openclaude
   -> src/utils/log.ts + src/utils/sessionStorage.ts
 ```
 
-阅读顺序应从这条主干开始，再进入 provider、MCP、Agent 或 UI 子系统。该顺序有助于保持完整控制流。
+建议先按上述顺序阅读一次完整的启动、查询、工具执行和日志写入流程，再进入 provider、MCP、Agent 或 UI 子系统。
 
 ## 17.2 顶层目录职责
 
 | 目录 | 主要职责 | 进入时机 |
 |---|---|---|
-| `src/entrypoints/` | CLI、init、MCP、SDK 和公开类型 | 入口、参数、宿主集成 |
+| `src/entrypoints/` | CLI、init、MCP、SDK 和公开类型 | 入口、参数、调用程序集成 |
 | `src/components/` | React/Ink 页面、消息、Dialog | 终端显示和交互 |
 | `src/hooks/` | TUI 行为组合、队列、取消、插件管理 | UI 到状态/服务的桥 |
-| `src/state/` | AppState store、selector、变更副作用 | 共享可订阅状态 |
-| `src/context/` | React context、modal、mailbox、通知 | 局部 UI ownership |
-| `src/query/` | query 辅助状态机、工具失败保护 | Agent loop 深入逻辑 |
+| `src/state/` | AppState store、selector、状态变化后的更新操作 | 共享可订阅状态 |
+| `src/context/` | React context、modal、mailbox、通知 | 局部 UI 状态管理 |
+| `src/query/` | query 状态处理、工具失败保护 | Agent loop 详细实现 |
 | `src/services/api/` | provider client、请求/stream/error 适配 | 多模型和网络协议 |
 | `src/tools/` | 内置与包装工具实现 | 模型可执行能力 |
 | `src/utils/permissions/` | permission mode/rule/path/safety | 自动批准与拒绝 |
 | `src/utils/settings/` | 配置源、schema、merge、policy | 配置优先级和治理 |
-| `src/services/mcp/` | MCP transport、discovery、auth | 外部 tool/resource |
+| `src/services/mcp/` | MCP 连接、能力发现和认证 | 外部 tool/resource |
 | `src/utils/plugins/` | marketplace、加载、安装、依赖 | 扩展分发和信任 |
 | `src/utils/hooks/` | Hook 匹配、进程/HTTP 执行、输出 | 生命周期拦截 |
 | `src/services/lsp/` | LSP client/server manager | 代码智能插件 |
 | `src/tasks/` | shell、agent、teammate、workflow、remote task | 长任务生命周期 |
 | `src/utils/swarm/` | team、mailbox、计划审批、协作 todo | 多 Agent 团队 |
-| `src/remote/`、`src/bridge/` | WebSocket/remote control/ingress | 远程会话 |
+| `src/remote/`、`src/bridge/` | WebSocket、remote control 和外部消息接入 | 远程会话 |
 | `src/ssh/` | SSH 启动、转发和远程环境 | `openclaude ssh` |
 | `src/memdir/` | session/team memory 路径和索引 | 长期记忆 |
-| `src/integrations/` | provider/model descriptor 与生成元数据 | 增加集成 |
+| `src/integrations/` | provider/model 描述配置与生成元数据 | 增加集成 |
 | `src/ink/` | 自维护终端 renderer | 底层渲染/输入问题 |
 | `src/grpc/` | 开发用 gRPC adapter | 非生产 RPC 实验 |
 | `scripts/` | build、生成、诊断、发布守卫 | 工程/构建 |
 
-`daemon`、`proactive`、`environment-runner`、`self-hosted-runner` 等目录具有独立的构建状态。当前可用性需要对照 `scripts/build.ts` 的 feature flags 和 stub。
+`daemon`、`proactive`、`environment-runner`、`self-hosted-runner` 等目录使用独立功能开关。当前可用性需要对照 `scripts/build.ts` 的功能开关和替代模块配置。
 
 ### 17.2.1 其余顶层目录与当前状态
 
 以下目录位于主循环外围，阅读仓库时会遇到：
 
-| 目录 | 职责 | 当前 open build 的判断 |
+| 目录 | 职责 | 当前公开构建版本的状态 |
 |---|---|---|
-| `src/assistant/` | KAIROS 持久 assistant 的 session 选择与历史 | `KAIROS=false`，entitlement gate 恒 false |
-| `src/buddy/` | 终端像素伙伴、动作效果和 shot clock 观察 | `BUDDY=true`。属于 UI/反馈，不改变 query 语义 |
+| `src/assistant/` | KAIROS 持久 assistant 的 session 选择与历史 | `KAIROS=false`，entitlement 检查恒不通过 |
+| `src/buddy/` | 终端像素伙伴、动作效果和 shot clock 观察 | `BUDDY=true`。只改变 UI 和反馈，不改变 query 执行流程 |
 | `src/coordinator/` | coordinator prompt、worker tools 和 session mode | 代码已构建。还需 `CLAUDE_CODE_COORDINATOR_MODE` 运行时开启 |
-| `src/daemon/` | daemon supervisor/worker registry | `DAEMON=false`，入口为 inert/stub |
-| `src/environment-runner/` | BYOC headless runner | 当前为 inert stub |
+| `src/daemon/` | daemon supervisor/worker registry | `DAEMON=false`，入口返回不可用 |
+| `src/environment-runner/` | BYOC headless runner | 当前使用不执行功能的替代模块 |
 | `src/i18n/` | locale 检测和命令文案字典 | 当前提供英文、越南文与 fallback |
-| `src/jobs/` | template/job-directory turn classifier | 当前实现明确为 inert stub |
-| `src/migrations/` | 启动时迁移旧设置、模型名和开关 | live startup compatibility。范围限于配置迁移 |
-| `src/native-ts/` | 原生能力的 TypeScript 替代，如 fuzzy file index、Yoga/color helpers | open build 降低 native addon 依赖 |
+| `src/jobs/` | template/job-directory turn classifier | 当前使用不执行功能的替代模块 |
+| `src/migrations/` | 启动时迁移旧设置、模型名和开关 | 启动时执行。范围限于配置迁移 |
+| `src/native-ts/` | 原生能力的 TypeScript 替代，如 fuzzy file index、Yoga/color helpers | 公开构建版本使用这些实现减少 native addon 依赖 |
 | `src/outputStyles/` | 从 Markdown/frontmatter 加载输出风格 prompt | 与 plugin output style cache 合并 |
 | `src/plugins/` | 内置插件注册表和 bundled plugin 初始化 | 与 `src/utils/plugins/` 的 marketplace/安装实现分工 |
 | `src/proactive/` | proactive active/pause/tick 状态 | `PROACTIVE=false`，主入口分支被裁剪 |
 | `src/proto/` | `openclaude.proto` 双向 Chat stream 契约 | 供开发 gRPC adapter 使用。npm package exports 未公开 |
-| `src/self-hosted-runner/` | self-hosted worker register/poll | 当前为 inert stub |
-| `src/skills/` | bundled skill registry、目录加载和 MCP skill builder | 多个 bundled skills live。各 skill 可以具有独立 gate |
+| `src/self-hosted-runner/` | self-hosted worker register/poll | 当前使用不执行功能的替代模块 |
+| `src/skills/` | bundled skill registry、目录加载和 MCP skill builder | 多个 bundled skills 可用。每个 skill 可以使用独立功能开关 |
 | `src/upstreamproxy/` | CCR remote container 的本地 relay、CA 和子进程代理注入 | 仅 `CLAUDE_CODE_REMOTE` 等受控环境条件满足时启用 |
-| `src/vim/` | Vim motion、operator、text object 和 transition | TUI 输入模式子系统 |
+| `src/vim/` | Vim motion、operator、text object 和模式状态转换 | TUI 输入模式子系统 |
 | `src/voice/` | voice feature/auth 可见性判断 | `VOICE_MODE=false`，当前产物不可用 |
 
-`src/types/`、`src/schemas/` 和 `src/constants/` 是横切定义层。`src/native-ts/` 提供替代实现。`src/__tests__/` 放置跨模块回归测试。`src/test/` 放置共享测试工具。
+`src/types/`、`src/schemas/` 和 `src/constants/` 保存多个模块共用的定义。`src/native-ts/` 提供替代实现。`src/__tests__/` 放置跨模块回归测试。`src/test/` 放置共享测试工具。
 
 ## 17.3 按主题定位源码
 
@@ -110,7 +110,7 @@ bin/openclaude
 | 工具执行时机 | query 的 tool-use branch | `src/tools.ts`/tool execution helpers |
 | Stop hook 运行时机 | query terminal branch | Hook service |
 | Abort 传播失败 | query AbortSignal | runTools → tool.call → child process |
-| 失败循环 | `src/query/toolFailureLoopGuard.ts` | retry/transition flags |
+| 失败循环 | `src/query/toolFailureLoopGuard.ts` | retry 和状态变化标记 |
 
 ### Context 与 prompt
 
@@ -134,10 +134,10 @@ bin/openclaude
 | OpenAI-compatible 请求 | `src/services/api/openaiShim.ts` | stream adapter/errors |
 | Gemini/Vertex 请求 | `src/services/api/geminiVertexClient.ts` | Google auth |
 | Bedrock 请求 | API client factory | AWS credential helpers |
-| 错误重试 | `src/services/api/errors.ts`、retry helper | query transition |
+| 错误重试 | `src/services/api/errors.ts`、retry helper | query 状态变化 |
 | provider fallback | provider profile/fallback helpers | query recovery |
 
-新增 provider 时应先阅读 `docs/integrations/overview.md` 和对应 `docs/integrations/how-to/`。实现过程应从 descriptor 和协议差异分析开始。
+新增 provider 时应先阅读 `docs/integrations/overview.md` 和对应 `docs/integrations/how-to/`。实现前需要列出名称、默认地址、模型能力等配置，以及请求、响应和认证格式的差异。
 
 ### 工具与权限
 
@@ -184,16 +184,16 @@ bin/openclaude
 | 配置优先级 | `src/utils/settings/settings.ts` | constants/types/schema |
 | 环境变量应用时机 | `src/utils/managedEnv.ts` | trust/startup |
 | JSONL 写入位置 | `src/utils/log.ts` | sessionStorage |
-| resume 活动链 | resume/log selector | transcript loaders |
+| resume 当前消息链 | resume/log selector | transcript loaders |
 | rewind 作用 | `src/commands/rewind/` | file history snapshot |
 | branch 作用 | `src/commands/branch/` | parent UUID/session IDs |
-| compact boundary 保存 | compact service/log events | resume projection |
+| compact 记录保存 | compact service/log events | resume 时重建有效消息链 |
 
 ### 扩展系统
 
 | 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| MCP server 连接失败 | `src/services/mcp/` | config/auth/transport |
+| MCP server 连接失败 | `src/services/mcp/` | config、auth 和连接方式 |
 | MCP tool 包装 | `src/tools/MCPTool/` | tool discovery |
 | plugin 发现 | `src/utils/plugins/` | startup checks/cache |
 | plugin 依赖拒绝 | dependencyResolver | marketplace policy |
@@ -210,7 +210,7 @@ bin/openclaude
 | V2 session | `sdk/v2.ts` | sessions/transcript |
 | SDK permission | `sdk/permissions.ts` | external callback |
 | Remote WebSocket | `src/remote/SessionsWebSocket.ts` | RemoteSessionManager |
-| bridge ingress | `src/bridge/` | session ingress auth |
+| bridge 外部消息接入 | `src/bridge/` | session 接入认证 |
 | SSH | `src/ssh/` | remoteIO/unix socket auth |
 | gRPC | `src/grpc/server.ts` | `scripts/start-grpc.ts` |
 
@@ -218,7 +218,7 @@ bin/openclaude
 
 ### Message
 
-内部对话事件的共同语义，通常包含 role/type、content blocks、UUID、parent UUID、session metadata 和可选 usage/error。Assistant content 可以同时含 text、thinking 和 tool use。
+内部对话事件使用 `Message` 表示。常见字段包括 role/type、content blocks、UUID、parent UUID、session metadata 和可选 usage/error。Assistant content 可以同时包含 text、thinking 和 tool use。
 
 ### Content block
 
@@ -226,11 +226,11 @@ bin/openclaude
 
 ### Tool
 
-具备 name、description/prompt、input schema、permission check、call、并发/只读属性和 UI/result 映射的 capability descriptor。
+可由模型调用的操作定义。每个 Tool 包含 name、description/prompt、input schema、permission check、call、并发/只读属性和 UI/result 转换函数。
 
 ### Tool use / Tool result
 
-模型提出的能力调用与本地返回。通过 ID 一一配对，是 provider 接受历史和 Agent loop 正确性的核心不变量。
+模型通过 Tool use 请求执行工具。本地运行结果通过 Tool result 返回。两者使用相同 ID 一一配对。配对错误会导致 provider 拒绝消息历史。
 
 ### Query
 
@@ -238,11 +238,11 @@ bin/openclaude
 
 ### Turn / Step
 
-Turn 更接近用户发起的一轮交互。step 常表示一次模型调用到下一次模型调用之间的推进。具体限制代码需按使用点确认，不能把所有计数统称“轮数”。
+Turn 表示用户发起的一轮交互。step 通常表示相邻两次模型调用之间的一次推进。限制代码分别统计 turn、step 和 token。
 
 ### AppState
 
-TUI 和业务层可订阅的当前状态投影。transcript 和模块级资源由各自存储管理。
+TUI 和业务代码可订阅的当前状态快照。内容包括任务、权限请求、MCP 状态和界面数据。transcript 和模块级资源保存在其他存储中。
 
 ### Bootstrap state
 
@@ -250,27 +250,27 @@ TUI 和业务层可订阅的当前状态投影。transcript 和模块级资源�
 
 ### QueryGuard
 
-主 query 的所有权与并发协调对象，防止多个 UI 触发器同时推进同一个主会话。
+记录主 query 的 dispatching、running 和结束状态。多个 UI 操作同时提交输入时，QueryGuard 只允许其中一个启动主 query。
 
 ### Command queue
 
-将用户 follow-up、steer、task notification、remote message 等按安全点送入主循环的队列。队列内容和 transcript 由独立结构管理。
+保存用户 follow-up、steer、task notification 和 remote message。当前模型或工具步骤结束后，主循环按优先级读取队列。队列内容不直接写入 transcript。
 
 ### Provider descriptor
 
-描述 provider/model 能力和默认值的元数据。不持有某次会话的凭据或网络 client。
+保存 provider/model 的名称、默认地址、能力和展示信息。该配置不保存某次会话的凭据或网络 client。
 
 ### Provider profile
 
-用户可选择/持久化的一组 provider、endpoint、model 和兼容设置。profile 解析后才构造 transport。
+用户可选择并持久化的一组 provider、endpoint、model 和兼容设置。程序解析 profile 后，根据其中的地址和认证信息创建 API client。
 
 ### Transport adapter
 
-把内部消息/tools/options 转成供应商请求，并把 stream/error/usage 转回内部语义的协议层。
+将内部 messages、tools 和 options 转换为供应商 API 请求。它还将 stream event、error 和 usage 转换为 query loop 使用的内部事件。
 
 ### Permission mode
 
-缺少具体规则时的交互/自动审批策略，不等同 OS 权限，也不等同 sandbox。
+缺少具体规则时使用的交互或自动审批策略。该设置只影响应用内授权。OS 权限和 sandbox 由独立机制控制。
 
 ### Permission rule
 
@@ -278,7 +278,7 @@ TUI 和业务层可订阅的当前状态投影。transcript 和模块级资源�
 
 ### Workspace trust
 
-用户允许当前项目级配置进入执行链的确认。它不自动批准所有工具，也不证明项目无恶意代码。
+用户确认程序可以加载当前目录中的项目级 Hook、MCP、环境变量和命令。具体工具调用还要通过 permission 检查。该确认不验证项目代码的安全性。
 
 ### Sandbox
 
@@ -290,7 +290,7 @@ TUI 和业务层可订阅的当前状态投影。transcript 和模块级资源�
 
 ### MCP
 
-Model Context Protocol。外部 server 通过 transport 暴露 tools/resources/prompts 等 capability。OpenClaude 作为 client 时将其包装进本地执行链。
+Model Context Protocol。外部 server 通过 stdio、SSE 或 HTTP 连接提供 tools、resources 和 prompts。OpenClaude 作为 client 时，将远端 tool 包装成本地 Tool 接口。
 
 ### Plugin
 
@@ -298,7 +298,7 @@ Model Context Protocol。外部 server 通过 transport 暴露 tools/resources/p
 
 ### Skill
 
-按需发现和加载的领域指令、资源和允许工具声明。其文本属于上下文，执行能力必须走工具边界。
+按需发现和加载的领域指令、资源和允许工具声明。Skill 文本会加入模型上下文。Skill 中提到的操作需要通过已注册 Tool 执行，并接受对应权限检查。
 
 ### Task
 
@@ -310,7 +310,7 @@ Model Context Protocol。外部 server 通过 transport 暴露 tools/resources/p
 
 ### Teammate
 
-拥有 team identity、mailbox、idle/active 协议和协作任务的成员，比普通 subagent 有更长期的团队语义。
+拥有 team identity、mailbox、idle/active 状态和协作任务的 Agent。teammate 完成一次 prompt 后会等待新消息，并保持团队身份。
 
 ### Worktree
 
@@ -318,44 +318,44 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### Conversation branch
 
-从某条历史消息建立新的 parent chain/leaf。共享当前文件系统，不创建 Git branch。
+从某条历史消息建立新的 parent chain 和末端消息。该操作共享当前文件系统，不创建 Git branch。
 
 ### Compact
 
-把旧上下文摘要成更短的 prompt projection，同时用 boundary/event 保留 transcript 可恢复性。
+将较早的消息整理为结构化摘要。后续模型请求发送摘要和保留的近期消息。transcript 会记录压缩位置，以便 resume 时重建消息链。
 
 ### Context collapse
 
-对上下文片段做 staged collapsing 的优化路径。它与标准摘要 compact 使用独立实现。
+分阶段缩短选定的上下文片段。该流程使用独立实现，并由功能开关控制。
 
 ### Reactive compact
 
-错误后尝试响应式压缩的概念。当前源码快照的实现是禁用 stub，不能按已启用能力理解。
+用于在错误后尝试压缩上下文的预留功能。当前源码快照使用禁用的替代模块，实际运行不会进入该流程。
 
 ## 17.5 容易混淆的概念对照
 
-| 概念 A | 概念 B | 区别 |
+| 概念 A | 概念 B | 说明 |
 |---|---|---|
-| model | provider | 模型能力标识 vs 提供 API/认证/协议的后端 |
-| profile | transport client | 持久选择配置 vs 某次运行构造的网络对象 |
-| query | API request | 可含多步工具循环 vs 单次网络请求 |
-| message | stream delta | 完整逻辑事件 vs 尚未完成的增量 |
-| permission | sandbox | 应用层授权决策 vs OS 执行约束 |
-| trust | permission | 启用项目控制面 vs 允许具体操作 |
-| Hook | tool | 生命周期拦截器 vs 模型可调用 capability |
-| Skill | plugin | 指令资源单元 vs 安装/分发能力包 |
-| MCP client | MCP server entry | 连接外部能力 vs 把本地工具重暴露出去 |
-| task | tool use | 长生命周期记录 vs 单次模型协议调用 |
-| subagent | teammate | 局部 fork 执行 vs 有团队身份的协作者 |
-| background | detached process | 生命周期不阻塞父 query vs 不一定是 OS 独立进程 |
-| resume | branch | 继续已有 leaf vs 从历史点创建新 leaf |
-| rewind conversation | rewind files | 改消息链 vs 恢复文件快照 |
-| conversation branch | Git branch/worktree | 对话 parent chain vs 文件版本隔离 |
-| compact | truncate | 语义摘要+boundary vs 机械删除 |
-| retry | fallback | 同一路由重发 vs 改 provider/model/profile |
-| context overflow | output truncation | 输入窗口不足 vs 回答达到输出上限 |
-| feature gate | runtime setting | 构建时裁剪 vs 进程运行时选择 |
-| telemetry | product network | 产品分析流量 vs 模型/MCP/WebFetch 等显式功能流量 |
+| model | provider | model 标识模型能力。provider 提供 API、认证和协议实现。 |
+| profile | API client | profile 是持久化选择配置。API client 是程序运行时创建的网络对象。 |
+| query | API request | query 可以包含多次模型请求和工具调用。API request 是一次网络请求。 |
+| message | stream delta | message 是完整事件。stream delta 是尚未合并的响应片段。 |
+| permission | sandbox | permission 决定应用批准或拒绝操作。sandbox 使用 OS 机制限制子进程。 |
+| trust | permission | trust 允许加载项目配置。permission 决定具体工具调用的执行权限。 |
+| Hook | tool | Hook 在生命周期事件发生时运行。tool 由模型主动调用。 |
+| Skill | plugin | Skill 提供指令和资源。plugin 是安装和分发多种扩展的包。 |
+| MCP client | MCP server entry | MCP client 连接外部 server。MCP server entry 将本地工具提供给外部调用方。 |
+| task | tool use | task 记录长时间运行的工作。tool use 是一次模型工具调用。 |
+| subagent | teammate | subagent 使用父会话提供的局部上下文。teammate 还具有团队身份和 mailbox。 |
+| background | detached process | background 表示父 query 不等待任务完成。该任务可以与父 query 运行在同一进程中。 |
+| resume | branch | resume 继续现有末端消息。branch 从指定历史消息创建新链。 |
+| rewind conversation | rewind files | rewind conversation 修改当前消息链。rewind files 恢复文件快照。 |
+| conversation branch | Git branch/worktree | conversation branch 只创建新的消息链。Git branch/worktree 隔离文件版本。 |
+| compact | truncate | compact 生成旧消息摘要并记录压缩位置。truncate 直接删除内容。 |
+| retry | fallback | retry 向同一路由重发请求。fallback 改用其他 provider、model 或 profile。 |
+| context overflow | output truncation | context overflow 表示输入超过窗口。output truncation 表示回答达到输出上限。 |
+| 构建功能开关 | runtime setting | 构建功能开关决定代码进入构建产物的条件。runtime setting 决定已有代码的启用状态。 |
+| telemetry | product network | telemetry 发送产品分析数据。模型、MCP 和 WebFetch 网络请求用于执行用户功能。 |
 
 ## 17.6 推荐学习路线
 
@@ -365,7 +365,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### 阶段二：理解模型与上下文
 
-阅读 05-06 章，对比一个 Anthropic 与一个 OpenAI-compatible request/stream。完成标准：能够区分 descriptor 差异与 adapter 必须处理的差异。
+阅读 05-06 章，对比一个 Anthropic request/stream 和一个 OpenAI-compatible request/stream。完成标准：能够指出描述配置保存的字段，以及 adapter 转换的请求与响应字段。
 
 ### 阶段三：理解能力与安全
 
@@ -377,11 +377,11 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### 阶段五：理解恢复与入口
 
-阅读 10、12、13 章，检查 resume、compact、abort、headless 和 SDK。完成标准包括共享核心的协议一致性和各入口的专用适配。
+阅读 10、12、13 章，检查 resume、compact、abort、headless 和 SDK。完成标准：能够说明各入口共用的 query 事件格式和独立的输入输出处理流程。
 
 ### 阶段六：形成工程判断
 
-阅读 15-16 章，选择一个真实改动，写出风险、不变量、focused tests 和完整 PR 验证。完成标准包括功能、权衡、失败模式和限制的完整说明。
+阅读 15-16 章，选择一个真实改动，写出风险、必须保持的规则、focused tests 和完整 PR 验证。完成标准包括功能、取舍、失败模式和限制的完整说明。
 
 ## 17.7 实践练习
 
@@ -390,10 +390,10 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 3. 找出 project settings 试图关闭 sandbox 时的判定路径。
 4. 构造 symlink 指向工作区外，跟踪 FileRead 与 FileEdit 的差异。
 5. 对比 OpenAI-compatible 与 Anthropic 的 tool result 请求形态。
-6. 从 JSONL 某个 leaf 手工沿 parent UUID 还原历史。
+6. 从 JSONL 某个末端事件沿 parent UUID 手工还原历史。
 7. 跟踪 background Agent 从 tool return 到 task notification。
 8. 在 SDK 中实现最小 `canUseTool`，确保只 resolve 一次并处理 abort。
-9. 模拟 context overflow，列出 API retry 和 query transition 的边界。
+9. 模拟 context overflow，列出 API retry 条件和 query 重启条件。
 10. 修改一个 feature flag，并预测源码、bundle 和 smoke test 的变化。
 
 ## 17.8 完整性检查矩阵
@@ -402,10 +402,10 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 | 领域 | 验收标准 | 对应章节 |
 |---|---|---|
-| 架构 | 五层协作和控制面/数据面分离 | 00 |
-| 构建 | feature、stub、CLI/SDK bundle 形成过程 | 01、15 |
+| 架构 | 五层职责以及配置决策与运行数据的流向 | 00 |
+| 构建 | 功能开关、替代模块和 CLI/SDK bundle 形成过程 | 01、15 |
 | 启动 | TUI/headless/SDK/MCP 分流 | 02、13 |
-| 状态 | 四类状态和消息协议一致性 | 03、09 |
+| 状态 | 四类状态的存储位置、更新时机和消息格式 | 03、09 |
 | 主循环 | 输入到 tool result 再到终止的全时序 | 04 |
 | 上下文 | prompt、memory、attachment、compact | 05 |
 | Provider | 配置、路由、协议、错误和 usage | 06 |
@@ -418,7 +418,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 | 工程 | tests、CI、调试、性能和贡献约束 | 15 |
 | 表达 | 分层讲解、追问、限制和个人贡献 | 16 |
 
-只掌握功能名称的领域需要继续回到对应源码完成具体状态迁移追踪。
+只能说出功能名称时，需要继续阅读对应源码，并记录输入、状态变化、输出和错误处理流程。
 
 ## 17.9 快速检索命令
 
@@ -442,24 +442,24 @@ rg -n "name:|inputSchema|checkPermissions|call\(" src/tools/<ToolName>
 rg --files src scripts | rg 'subject.*test\.(ts|tsx)$'
 ```
 
-搜索用于建立候选调用图。live path 判断还需要检查 feature gate、dynamic import、入口参数和 build stub。
+搜索结果用于建立可能的调用关系。确认代码实际可执行时，还需要检查功能开关、dynamic import、入口参数和构建时替代模块。
 
 ## 17.10 指南索引
 
-- [00 全景与核心心智模型](00-architecture-overview.md)
-- [01 仓库、构建与运行时](01-repository-build-runtime.md)
-- [02 入口与启动链路](02-entrypoints-startup.md)
+- [00 总体架构](00-architecture-overview.md)
+- [01 运行环境与系统装配](01-repository-build-runtime.md)
+- [02 启动流程](02-entrypoints-startup.md)
 - [03 状态与数据模型](03-state-and-data-model.md)
-- [04 主 Agent 执行循环](04-query-agent-loop.md)
+- [04 会话执行流程](04-query-agent-loop.md)
 - [05 上下文、Prompt、记忆与压缩](05-context-prompt-memory.md)
-- [06 模型供应商与协议适配](06-provider-model-transport.md)
+- [06 模型供应商接入](06-provider-model-transport.md)
 - [07 工具、权限、沙箱与文件安全](07-tools-permissions-security.md)
 - [08 Agent、任务、团队与编排](08-agents-tasks-orchestration.md)
-- [09 TUI 与交互状态流](09-tui-interaction-flow.md)
+- [09 终端交互](09-tui-interaction-flow.md)
 - [10 配置与会话持久化](10-configuration-session-persistence.md)
 - [11 MCP、插件、Hooks 与 LSP](11-mcp-plugins-hooks-lsp-commands.md)
-- [12 错误恢复与特殊场景](12-errors-retries-recovery-edge-cases.md)
-- [13 多入口与部署形态](13-entrypoint-modes-sdk-remote.md)
-- [14 安全边界与威胁模型](14-security-model.md)
+- [12 错误与恢复](12-errors-retries-recovery-edge-cases.md)
+- [13 使用入口与部署形态](13-entrypoint-modes-sdk-remote.md)
+- [14 安全检查与威胁模型](14-security-model.md)
 - [15 工程质量与测试方法](15-engineering-and-testing.md)
-- [16 简历与面试讲解稿](16-interview-playbook.md)
+- [16 架构场景串联](16-interview-playbook.md)

@@ -1,218 +1,197 @@
-# 03. 状态与数据模型
+# 03. 状态与数据
 
-## 1. 状态分布在多个域
+## 1. 状态设计目标
 
-OpenClaude 同时维护四种状态域：
+OpenClaude 同时处理终端渲染、模型流、工具执行、后台任务和会话恢复。这些数据具有不同的更新频率和保存时间。系统按用途将状态分开管理。
 
-| 状态域 | 典型实现 | 生命周期 | 适合内容 |
-|---|---|---|---|
-| Query 局部状态 | `query.ts` 的局部 `State` | 单次 Agent 调用 | 当前消息、转移原因、恢复 guard、turn count |
-| React 运行状态 | `AppStateStore` | 当前交互宿主 | tasks、MCP、权限、todos、插件、视图 |
-| Bootstrap/进程状态 | `bootstrap/state.ts` | 进程或 SDK ALS scope | sessionId、cwd、成本、入口类型、全局 latch |
-| 持久状态 | settings / JSONL / sidecar | 跨进程 | 配置、消息链、标题、任务恢复元数据 |
+主要目标包括：
 
-另有 command queue、MCP client memoize、LSP manager、provider profile cache 等模块级 store。它们通常通过 signal 或显式 reset 暴露变化。
+- 流式文本更新不会触发所有模块刷新。
+- 后台任务离开当前界面后可以继续运行。
+- 同一会话只运行一个主请求。
+- SDK 中的多个会话不会相互覆盖。
+- 进程退出后可以从事件日志恢复。
 
 ## 2. 消息模型
 
-定义集中在 `src/types/message.ts`，上层统一使用内部 `Message`，到 API 边界再正规化。
+消息是会话模块之间传递内容的统一格式。
 
 ### 2.1 用户消息
 
-用户消息可包含：
+用户消息包含文本和附件引用。附件可以表示图片、文件片段、项目指令、Skill 内容、任务通知和其他结构化上下文。
 
-- 文本。
-- 图片、文档转换后的 content block。
-- `tool_result`。
-- `isMeta` 的运行时控制提示。
-- `origin`，例如 task notification。
-- `toolUseResult` 等仅内部/持久化辅助字段。
-
-“user”角色覆盖多类消息来源。模型协议要求工具结果以 user role 返回。系统注入的延续指令也可能复用 user message。
+用户消息还可以记录来源。来源用于区分本地用户输入、远程消息、任务通知和外部 channel 内容。
 
 ### 2.2 Assistant 消息
 
-包含 provider 返回的：
+Assistant 消息可以同时包含以下内容：
 
-- text。
-- thinking / redacted thinking。
-- 一个或多个 `tool_use`。
-- usage、request id、stop reason。
-- synthetic/API error 标记。
+- 文本回答。
+- 思考内容。
+- 工具请求。
+- API 错误。
+- token 用量和结束原因。
 
-thinking 有严格轨迹约束：受保护的 thinking 必须和生成它的模型/协议匹配。fallback 或 OpenAI-compatible 恢复时可能需要剥离，Anthropic native 路径则要保留签名。
+流式响应会先形成临时片段。流结束后，系统将片段合并为完整 Assistant 消息。
 
-### 2.3 Attachment 消息
+### 2.3 工具消息
 
-Attachment 是运行时上下文的可追踪载体，包括：
+工具请求包含工具名、调用 ID 和参数。工具结果使用相同调用 ID，并记录成功、失败或中止状态。
 
-- CLAUDE.md/项目指令。
-- IDE selection、诊断、git 状态。
-- todo、计划模式状态。
-- memory、invoked skills。
-- 最近读取文件。
-- 后台 Agent 状态。
-- max-turns 等控制信息。
+一条 Assistant 消息可以包含多个工具请求。对应的工具结果会按原请求顺序加入历史。该顺序可以满足 provider 对消息结构的要求。
 
-附件允许不同宿主共享注入语义，又能在 compaction 后按规则重建。
+### 2.4 系统与进度消息
 
-### 2.4 Progress、System 与 Tombstone
+系统消息用于保存重试说明、上下文压缩记录、中止标记和恢复说明。进度消息用于展示工具和后台任务的当前状态。部分进度只显示在界面中，不写入模型上下文。
 
-- `progress` 面向 UI/SDK，通常不参与持久 parent chain。
-- `system` 可表示 warning、retry、compact boundary。
-- tombstone 删除已经流出且随后认定无效的消息。写入层会移除对应 UUID。
+### 2.5 消息关系
 
-## 3. `tool_use` / `tool_result` 配对不变量
+持久化消息包含唯一 ID 和父消息 ID。
 
-合法轨迹：
-
-```text
-assistant: [text(optional), tool_use(id=A), tool_use(id=B)]
-user:      [tool_result(tool_use_id=A), tool_result(tool_use_id=B)]
-assistant: [...]
+```mermaid
+flowchart LR
+  A[用户消息] --> B[Assistant 工具请求]
+  B --> C[工具结果]
+  C --> D[Assistant 最终回答]
+  B --> E[错误恢复分支]
+  A --> F[对话分支]
 ```
 
-破坏配对会使 Anthropic/OpenAI shim 拒绝请求。项目在多条异常路径补齐：
+父子关系允许一份日志保存多个分支。当前会话只选择其中一条消息链。
 
-- 模型 stream 中断。
-- 用户取消。
-- fallback 丢弃第一次 attempt。
-- tool 被队列取消或未开始。
-- query runtime 异常。
-- resume 时父对话带有 incomplete call。
+## 3. 状态分类
 
-`runAgent.filterIncompleteToolCalls()` 在 fork 父上下文时剔除孤立 assistant tool call。主 query 则优先生成 synthetic error result，以保留可解释轨迹。
+| 状态域 | 主要内容 | 更新来源 | 保存时间 |
+|---|---|---|---|
+| 交互状态 | 输入、对话框、滚动、当前视图 | 终端操作 | 当前界面 |
+| 会话状态 | 当前模型、权限模式、消息、待办 | 用户和会话编排 | 当前会话 |
+| 查询状态 | 当前阶段、中止信号、重试和预算 | 会话编排 | 当前请求 |
+| 任务状态 | 任务类型、状态、进度、输出 | Agent 和任务管理 | 任务生命周期 |
+| 服务状态 | MCP、LSP、插件、远程连接 | 服务管理模块 | 当前进程 |
+| 持久状态 | 事件日志、设置、文件快照、大型结果 | 持久化模块 | 跨进程 |
 
-## 4. Query 局部状态
+## 4. 交互状态
 
-`src/query.ts` 把循环状态显式存入局部 `State`，核心字段包括：
+交互状态服务于终端界面。它包含当前输入内容、选中项、活动对话框、流式文本、滚动位置和当前 Agent 视图。
 
-- `messages`：下一次请求的对话。
-- `toolUseContext`。
-- `autoCompactTracking`。
-- `maxOutputTokensRecoveryCount`。
-- `hasAttemptedReactiveCompact`。
-- `hasAttemptedContextOverflowRecovery`。
-- `hasAttemptedProviderFallback`。
-- output token overrides/caps。
-- pending tool-use summary。
-- stop hook 状态。
-- `turnCount`、continuation count、agent step limit。
-- `transition`：进入本轮的原因。
+高频状态尽量保留在对应界面区域。流式文本和动画不会写入全局设置。需要被多个组件观察的任务、权限和 MCP 状态会进入共享会话状态。
 
-恢复 guard 必须跨 stop-hook retry 保留。缺失该 guard 会导致 compact/fallback 死循环。
+## 5. 会话状态
 
-`query/transitions.ts` 把结果分为：
+会话状态保存当前对话需要共享的数据：
 
-- **Terminal**：completed、model/image error、prompt-too-long、abort、hook stop、max turns、agent step limit、tool failure loop。
-- **Continue**：next turn、compact retry、provider cap/fallback retry、output recovery、stop-hook blocking、token-budget continuation。
+- 当前 provider 和 model。
+- 权限模式与临时授权。
+- 主消息列表。
+- Agent 和任务列表。
+- MCP、插件和 LSP 状态。
+- 待办、计划和团队信息。
+- 当前工作目录和附加目录。
 
-## 5. `AppStateStore`
+状态变化会通知订阅者。模型变化还会更新请求配置。权限变化还会影响工具过滤和确认流程。工作目录变化还会刷新项目指令和目录相关缓存。
 
-`src/state/AppStateStore.ts` 是 vanilla store。`AppStateProvider` 把它注入 React。组件通过 selector 订阅状态切片。该机制避免每次复制整份 state。
+## 6. 查询状态
 
-主要分区：
+查询状态描述当前请求的执行情况。
 
-- `toolPermissionContext`：模式、allow/deny rule、working directories、prompt 策略。
-- `tasks: Record<string, TaskStateBase>`。
-- `mcp`：clients、tools、commands、resources、errors。
-- `plugins`：enabled/disabled、commands、errors、refresh 状态。
-- `todos`、file history、attribution。
-- provider/model、effort、fast mode。
-- tool result replacement state。
-- team context、agent registry、当前查看任务。
-- UI 相关的跨组件共享状态。
+| 字段类别 | 作用 |
+|---|---|
+| 阶段 | 准备、请求模型、执行工具、恢复、结束 |
+| 中止 | 保存当前 AbortSignal 和中止原因 |
+| 恢复 | 保存已经执行的重试、压缩和模型切换 |
+| 限制 | 保存 turn、step 和 token 预算 |
+| 流式内容 | 保存尚未形成完整消息的模型输出 |
+| 工具执行 | 保存调用 ID、批次和剩余结果 |
 
-### 5.1 root `setAppStateForTasks` 的职责
+每次请求结束后，查询状态会清理。需要进入下一轮的消息和任务状态会写入会话状态或持久化日志。
 
-异步子代理可以嵌套创建后台任务。父 `ToolUseContext.setAppState` 在 async agent 隔离中可能是 no-op。该约束防止子代理修改父 UI。task 注册和 kill 必须在根任务表可见。context 因此额外提供 root setter。root setter 仅用于需要跨隔离边界的任务状态。
+## 7. 主请求并发控制
 
-### 5.2 `onChangeAppState`
+同一会话只允许一个主请求推进消息历史。系统使用同步状态记录主请求处于空闲、准备或运行状态。
 
-所有 state 变化经过 store diff hook，可集中处理副作用：
+用户快速连续提交输入时，第一个输入取得运行资格。后续输入根据当前状态进入 follow-up 队列或 steer 队列。取消后，新请求会获得新的 generation ID。旧请求迟到的结束回调不能结束新请求。
 
-- 权限模式变化同步到 CCR/SDK metadata。
-- model 变化写回设置/profile。
-- expanded/verbose 持久化。
-- settings 变化清理凭据 cache 并应用环境变量。
+后台任务使用独立任务状态。它们不会占用主请求的运行资格。
 
-集中 choke point 避免多个 UI/命令调用点漏同步。
+## 8. 命令队列
 
-## 6. `bootstrap/state.ts`
+命令队列保存当前请求运行期间到达的新事件：
 
-这是刻意受控的模块级会话状态。重要类别：
+- 用户追加要求。
+- 用户调整当前方向的 steer 消息。
+- 后台任务完成通知。
+- Teammate 消息。
+- 远程会话消息。
+- 本地控制命令。
 
-- identity：sessionId、parentSessionId、client type、query source。
-- paths：original cwd、project root、current cwd。
-- usage：cost、API/tool duration、tokens、lines changed。
-- session options：interactive、persistence、dangerous mode、SDK betas。
-- feature latches：fast mode、cache editing、thinking clear。
-- invoked skills、prompt cache state、replay index builder。
-- SDK/remote writer context。
+队列按类型和到达顺序处理。中止和本地控制命令具有较高优先级。用户输入优先于普通后台通知。当前模型或工具步骤结束后，主循环读取队列并将适用内容加入下一轮上下文。
 
-SDK 通过 `AsyncLocalStorage` 的 `runWithSdkContext()` 覆盖 sessionId 等敏感字段，避免同进程并发 query 共享一个全局 session。
+## 9. 任务状态
 
-## 7. QueryGuard
-
-`src/utils/QueryGuard.ts` 是同步状态机：
+任务状态用于表示持续时间超过单次工具调用的工作。
 
 ```mermaid
 stateDiagram-v2
-  [*] --> idle
-  idle --> dispatching: reserve()
-  dispatching --> running: tryStart()
-  dispatching --> idle: cancelReservation()
-  running --> idle: end(generation)
-  running --> idle: forceEnd()
+  [*] --> pending
+  pending --> running
+  running --> completed
+  running --> failed
+  running --> cancelled
+  pending --> cancelled
 ```
 
-它解决 React state 批处理无法作为并发锁的问题。generation 防止“取消后立刻重提”时旧 query 的 finally 把新 query 误置 idle。
+任务记录包含任务 ID、类型、描述、状态、进度、输出位置和停止方式。Agent、Shell、Remote 和 workflow 可以使用不同执行器，并向任务管理模块报告统一状态。
 
-Guard 还有：
+任务完成时只发送一次通知。读取任务输出不会重复生成完成通知。
 
-- idle timeout 和 hard max timeout。
-- activity registration。
-- lease：长工具/用户交互可说明当前存在活跃工作。
-- active operation snapshot，用于诊断超时。
+## 10. 服务状态
 
-## 8. Command Queue
+MCP、LSP、插件和远程连接具有进程级状态。服务状态记录连接中、已连接、需要认证、失败和已停止等情况。
 
-`messageQueueManager.ts` 是 React 外部 store：
+服务状态变化会更新工具池和界面。MCP 工具列表变化时，旧工具集合会被替换。LSP 重启时，已打开文件会重新同步。插件更新时，新配置准备完成后再替换旧配置。
 
-- `now`：需要中断/尽快处理。
-- `next`：用户输入默认优先级。
-- `later`：后台 task notification。
+## 11. 持久状态
 
-同优先级 FIFO。`useQueueProcessor` 同时订阅 queue 和 QueryGuard。只有 query idle 且没有 local JSX modal 时才 dequeue。这样用户输入不会被大量后台完成通知饿死。
+持久化模块保存以下数据：
 
-## 9. Task 状态
+- 会话消息和父子关系。
+- 会话名称、标签和模型信息。
+- 上下文摘要和内容替换记录。
+- 文件历史快照。
+- 大型工具结果文件。
+- Agent 子会话和任务输出。
+- 团队与长期记忆数据。
 
-基础定义：
+写入采用追加方式。每条事件独立解析。单条损坏记录不会使整份日志失效。
 
-```ts
-type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'killed'
-```
+## 12. 状态变化示例
 
-`TaskStateBase` 含 id/type/description/toolUseId/start/end/output file/offset/notified。具体 task 扩展：
+### 12.1 用户切换模型
 
-- local shell：command、process/abort、stdout summary。
-- local agent：messages、progress、pending messages、background/retain/evict。
-- remote agent：sessionId、poll state、todo、remote task type。
-- in-process teammate：identity、mailbox、idle/plan/shutdown 状态。
-- workflow、monitor、dream 等 gate 下类型。
+1. 交互模块提交模型选择。
+2. 会话状态更新当前模型。
+3. 模型接入模块刷新请求配置。
+4. 下一次请求使用新模型。
+5. 会话日志记录模型变化。
 
-terminal 状态永不再转换。注入消息、eviction、orphan cleanup 都用 `isTerminalTaskStatus()` 守卫。
+### 12.2 后台 Agent 完成
 
-## 10. 持久链状态
+1. Agent 更新任务状态和输出。
+2. 任务管理模块将通知加入命令队列。
+3. 主请求在当前步骤结束后读取通知。
+4. 通知作为结构化消息进入上下文。
+5. 界面更新任务状态。
 
-JSONL 每条消息有 `uuid` 和 `parentUuid`。这组字段可以表示分支结构。metadata 条目可以独立于消息链。恢复过程执行以下步骤：
+### 12.3 用户取消请求
 
-1. 读 metadata 和 message map。
-2. 计算被引用的 parent UUID。
-3. 找 leaf。
-4. 从 leaf 反向构造主链。
-5. 应用 compact preserved-segment relink、snip 删除和 content replacement。
+1. 交互模块标记主请求结束。
+2. 中止信号传给模型和工具。
+3. 已产生文本保存为部分回答。
+4. 未完成工具调用获得中止结果。
+5. 新输入可以启动下一次请求。
 
-这使 rewind/fork/compact 可以共存。
+## 13. 状态设计总结
 
-下一章：[04 主 Agent 执行循环](04-query-agent-loop.md)。
+状态按更新频率、读取范围和保存时间拆分。交互状态服务界面。会话状态服务当前对话。查询状态服务单次执行。任务状态服务后台工作。服务状态管理外部连接。持久状态支持恢复和审计。
+
+下一章说明这些状态在一次完整会话请求中怎样变化。

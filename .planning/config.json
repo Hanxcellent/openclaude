@@ -1,0 +1,50 @@
+{
+  "project": {
+    "name": "OpenClaude CLI Input Responsiveness Fix",
+    "version": "0.1.0",
+    "description": "Specification for eliminating prompt stalls around transient suggestions, Ctrl+C feedback, statusline commands, and file indexing.",
+    "repository": "."
+  },
+  "mode": "interactive",
+  "granularity": "standard",
+  "workflow": {
+    "auto_commit": true,
+    "commit_message_template": "fix: {phase}-{plan}: {description}",
+    "require_verification": true,
+    "verification_types": ["automated", "manual", "integration"],
+    "create_summaries": true,
+    "update_state": true,
+    "research": false,
+    "plan_check": true,
+    "verifier": true,
+    "auto_advance": false,
+    "nyquist_validation": true,
+    "security_enforcement": true,
+    "security_asvs_level": 1,
+    "security_block_on": "high",
+    "discuss_mode": "discuss"
+  },
+  "quality": {
+    "test_coverage_threshold": 80,
+    "require_linting": true,
+    "require_type_checking": true,
+    "require_formatting": true,
+    "code_quality_checks": ["bun run check", "bun run typecheck", "bun run build"]
+  },
+  "planning": { "commit_docs": true, "search_gitignored": false, "sub_repos": [] },
+  "parallelization": { "enabled": false, "plan_level": false, "task_level": false },
+  "gates": {
+    "confirm_project": true,
+    "confirm_phases": true,
+    "confirm_roadmap": true,
+    "confirm_breakdown": true,
+    "confirm_plan": true,
+    "execute_next_plan": true,
+    "issues_review": true,
+    "confirm_transition": true
+  },
+  "safety": { "always_confirm_destructive": true, "always_confirm_external_services": true },
+  "verification": { "automated_tests": true, "manual_verification": true, "integration_tests": true, "performance_tests": true, "security_scan": false },
+  "git": { "create_tag": false },
+  "project_code": "CLI-RESP"
+}

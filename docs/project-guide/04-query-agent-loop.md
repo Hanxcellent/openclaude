@@ -1,236 +1,243 @@
-# 04. 主 Agent 执行循环
+# 04. 会话执行流程
 
-## 1. 从输入到 `query()`
+## 1. 流程目标
 
-交互路径：
+会话执行流程将用户要求转换为模型回答和工具操作。一次用户请求可以包含多次模型调用、多个工具批次和若干恢复操作。
 
-```text
-PromptInput.onSubmit
-  → REPL.onSubmit
-  → handlePromptSubmit
-  → processUserInput
-  → REPL.onQuery
-  → REPL.onQueryImpl
-  → query(params)
-  → queryLoop(params)
+流程需要保证以下结果：
+
+- 每次模型请求使用当前有效上下文。
+- 每个工具请求都得到对应结果。
+- 用户可以随时中止前台请求。
+- 重试和恢复具有次数限制。
+- 后台通知可以安全加入后续处理。
+- 最终消息和状态可以完整恢复。
+
+## 2. 总体流程
+
+```mermaid
+flowchart TD
+  A[接收输入] --> B[分类和预处理]
+  B --> C[取得主请求运行资格]
+  C --> D[读取会话状态]
+  D --> E[组装上下文]
+  E --> F[请求模型]
+  F --> G[接收流式事件]
+  G --> H{模型输出}
+  H -->|最终文本| I[检查结束条件]
+  H -->|工具请求| J[校验和调度工具]
+  J --> K[执行工具]
+  K --> L[生成工具结果]
+  L --> M[保存消息和状态]
+  M --> E
+  I --> N[结束处理]
+  N --> O[保存并展示]
 ```
 
-Headless/SDK 路径绕过 React。它们同样消费 `query()`，或由 `QueryEngine` 包装该生成器。
+## 3. 输入分类
 
-## 2. 输入预处理
+入口模块接收以下输入：
 
-`handlePromptSubmit()` 分两条入口：
+| 输入类型 | 处理方式 |
+|---|---|
+| 普通文本 | 创建用户消息并启动主请求 |
+| 附件 | 与用户消息一起加入上下文 |
+| Slash command | 执行本地命令或生成模型提示 |
+| Bash 快捷输入 | 直接进入 Shell 工具流程 |
+| Follow-up | 排队到当前请求后续步骤 |
+| Steer | 调整当前任务方向 |
+| 任务通知 | 在当前步骤结束后加入上下文 |
+| 中止命令 | 立即触发取消流程 |
 
-### 2.1 直接键盘输入
+预处理会展开粘贴内容、解析附件、检查命令类型并保存用户输入历史。
 
-1. 空输入直接返回。
-2. `exit/quit/:q` 改写为 `/exit`。
-3. 展开粘贴文本引用。输入引用的图片会被保留。
-4. query 运行中遇到 immediate local-JSX command，可直接打开 UI，不排入模型队列。
-5. query 运行中普通 prompt 放入 command queue。prompt 不会默认中断当前生成。
-6. idle 时构造一个 `QueuedCommand`，进入统一执行逻辑。
+## 4. 主请求启动
 
-### 2.2 Queue processor 输入
+系统在执行异步预处理前预留主请求状态。该设计可以防止用户连续提交输入时启动两个主请求。
 
-task notification、运行中提交的用户 prompt、channel/系统消息都已经预验证，跳过重复的输入检查，批量交给 `executeUserInput()`。
+主请求启动后会完成以下准备：
 
-### 2.3 `executeUserInput()`
+1. 读取最新消息、模型、权限、工具和工作目录。
+2. 创建本轮中止控制器。
+3. 确定 turn、step 和 token 限制。
+4. 初始化流式消息缓冲和工具执行状态。
+5. 记录本轮开始原因。
 
-- 创建新 AbortController。
-- `queryGuard.reserve()`，先占 dispatching 锁。
-- 对每个 queued command 调 `processUserInput()`。
-- 只给第一条命令注入 IDE selection、pasted images、turn-level attachments。
-- 汇总 messages、allowed tools、model/effort override。
-- 调 `onQuery()`。
-- finally 释放未转成 running 的 reservation。
+## 5. 上下文组装
 
-这避免异步 slash command 预处理期间第二个 query 穿透。
+上下文管理模块按顺序准备模型输入：
 
-## 3. `REPL.onQuery()` 的所有权协议
+1. 系统规则和安全说明。
+2. 项目与用户指令。
+3. 当前会话的有效消息链。
+4. 附件、技能和记忆。
+5. 后台任务通知和排队输入。
+6. 当前可用工具定义。
 
-`onQuery()` 执行：
+上下文模块计算 token 使用量。容量不足时，它会先使用已准备的内容缩减结果，再执行自动压缩。压缩完成后，本轮重新组装上下文。
 
-1. `queryGuard.tryStart()`：dispatching → running，并获得 generation。
-2. 可选执行 `onBeforeQuery`。拒绝则结束本轮。
-3. 把新 user/attachment messages 加入 UI state。
-4. 解析该轮 token budget、重置计时和 cache metrics。
-5. 调 `onQueryImpl()` 消费 generator。
-6. finally 根据 abort/error 推导 terminal reason，并调用 `queryGuard.end(generation)`。
+## 6. 模型请求
 
-结束 guard 前需要验证 generation 匹配。取消后快速提交的新 query 不会被旧 finally 清掉。
+模型接入模块根据当前 provider、model 和 profile 构造请求。请求包含消息、工具定义、输出上限、推理设置和 provider 专用参数。
 
-## 4. `onQueryImpl()` 的准备阶段
+模型流式返回以下事件：
 
-每轮从 store 读取以下最新状态。该方式避免使用 closure 捕获的旧值：
+- 消息开始。
+- 文本片段。
+- 思考内容片段。
+- 工具请求和参数片段。
+- token 用量。
+- 消息结束或错误。
 
-- tool pool + MCP tools。
-- MCP clients。
-- permission context。
-- agent definitions。
-- provider/model/effort。
-- custom system prompt。
+会话编排模块将片段合并为完整消息。入口模块可以同步展示已经收到的文本和进度。
 
-随后并行准备：
+## 7. 无工具请求的处理
 
-- 需要时撤销不再允许的 bypass/auto mode。
-- system prompt。
-- user context。
-- system context。
+模型只返回文本时，系统检查以下条件：
 
-构造 `ToolUseContext`，包含 messages、abort、tools、state get/set、read-file cache、UI callback、权限 prompt、query activity/lease 等运行能力。
+- 模型正常结束。
+- 输出因 token 上限截断。
+- Stop Hook 要求继续。
+- 命令队列中存在 follow-up 或任务通知。
+- 本轮达到 turn、step 或 token 限制。
 
-## 5. `query()` 与 `queryLoop()`
+正常结束会进入结束处理。输出截断可以触发有限次数的续写。Stop Hook 可以提供反馈并启动下一次模型请求。队列中存在新消息时，系统将其加入下一轮上下文。
 
-`query()` 是薄包装：调用 `queryLoop()`，并在正常结束时发 command lifecycle complete。`queryLoop()` 是真正状态机。
+## 8. 工具请求的处理
 
-### 5.1 每次循环开始
+### 8.1 参数准备
 
-- 读取 transition state。
-- 判断 proactive auto-compact / forced memory-pressure compact。
-- 处理 compact 结果并重建消息。
-- 检查消息条数硬上限和 context blocking limit。
-- 决定本次模型和 smart route。
-- 生成 API-ready messages、tools、system/user context。
-- 重置本 attempt 的 assistant/tool buffers。
+模型返回的工具参数可能分散在多个流式片段中。系统收集完整 JSON 后执行 schema 校验和工具专用校验。
 
-### 5.2 请求模型流
+参数无效时，系统生成带错误信息的工具结果，并将错误返回模型。无效参数不会进入工具执行。
 
-API 层把 provider stream 转成内部事件。循环逐项处理：
+### 8.2 权限处理
 
-- stream event 透传给 SDK/UI。
-- assistant message 记录 usage、文本和 `tool_use`。
-- 特定 error message 暂时 withheld，先让本地恢复逻辑判断。
-- tombstone 删除无效前序消息。
-- fallback 时丢弃第一次 attempt 的 executor 和 tool IDs。
-- cached microcompact 可在流后生成边界消息。
+工具执行前依次检查：
 
-`needsFollowUp` 由 tool use 等事件控制，不以文本存在状态判断。
+1. 工具处于当前会话可用列表。
+2. 输入满足工具格式和状态要求。
+3. PreToolUse Hook 未阻止操作。
+4. Permission rule 允许操作或用户完成确认。
+5. 文件路径、Shell 命令和网络目标通过安全检查。
+6. 需要沙箱的进程完成隔离设置。
 
-## 6. 无工具调用时的终止/恢复
+### 8.3 并发调度
 
-模型没有要求工具后，按顺序检查：
+工具声明自己的并发属性。连续的只读安全工具可以并发运行。写操作、顺序相关操作和未声明并发安全的工具会形成串行批次。
 
-1. prompt-too-long：先 drain staged context collapse，再 reactive compact。
-2. provider context overflow：强制 auto compact 后只重试一次。
-3. provider max output cap：解析错误中的 cap 后重发。
-4. max output stop：可提升请求 cap，之后最多三次 meta continuation。
-5. provider rate limit：按 `providerFallbackChain` 切 profile 并重试一次。
-6. API error：仅执行 StopFailure hook。
-7. 普通有效回答：执行 Stop/SubagentStop hook。
+默认并发数具有上限。某个前置 Shell 命令失败时，同批依赖操作可以中止。
 
-Stop hook 可返回 blocking feedback，使消息加入对话并再次请求模型。对应 transition 为 `stop_hook_blocking`。为防 death spiral，compact/provider fallback guard 不会被重置。
+### 8.4 进度与结果
 
-## 7. 有工具调用时
+工具可以持续返回进度。进度用于界面和 SDK 事件。最终结果包含内容、错误状态和必要的显示信息。
 
-### 7.1 Agent step limit
+结果较大时，完整内容写入会话文件。模型只接收预览和文件位置。
 
-子代理设置 `maxSteps` 时，达到限额后：
+### 8.5 结果回填
 
-- 尚未执行的 tool call 得到 error `tool_result`。
-- 注入“停止工具调用并给出最终摘要”的控制消息。
-- 下一次继续调用工具时进入 terminal `agent_step_limit`。
+所有工具请求按原始顺序获得工具结果。成功、失败、拒绝和中止都生成结果。工具结果保存后，系统重新组装上下文并请求模型。
 
-### 7.2 工具分批
+## 9. 重复失败保护
 
-`runTools()` 调 `partitionToolCalls()`：
+模型可能持续使用相同无效参数调用同一工具。系统根据工具名、参数和错误类别识别重复失败。
 
-- 连续的 `isConcurrencySafe()` 工具组成并行 batch。
-- 非并发安全工具每个单独串行。
-- batch 按原顺序执行，确保写操作边界不被越过。
-- 并行上限来自配置/环境。
+达到预警次数时，系统向模型提供明确反馈。继续重复时，本轮以工具失败循环状态结束。成功调用会清理对应失败记录。
 
-“只读”与“并发安全”在实践上相关。最终调度以工具的 `isConcurrencySafe()` 为准。
+## 10. 后续输入和任务通知
 
-### 7.3 StreamingToolExecutor
+当前请求运行期间到达的新消息进入命令队列。
 
-启用 streaming tool execution 时，完整 `tool_use` block 一到就可排队执行，不必等整个 assistant stream 结束。关键约束：
+```mermaid
+flowchart LR
+  A[当前模型或工具步骤] --> B[步骤结束]
+  C[Follow-up] --> D[命令队列]
+  E[任务通知] --> D
+  F[远程消息] --> D
+  B --> G[读取队列]
+  D --> G
+  G --> H[加入下一轮上下文]
+```
 
-- fallback 时必须 `discard()` 旧 executor。
-- abort 时必须 drain remaining results，让所有已出现的 tool ID 有 synthetic result。
-- tool progress 可先于最终 result 发给宿主。
+中止命令和本地控制命令可以立即处理。普通 follow-up 和通知等待当前步骤完成。用户排队输入优先于后台通知。
 
-### 7.4 工具结果回填
+## 11. 中止流程
 
-每个工具最终生成 user message 中的 `tool_result`。结果会经过：
+用户取消请求时，系统执行以下操作：
 
-- post-tool hooks。
-- 结果预算/大输出落盘。
-- UI progress。
-- tool failure loop 分类。
-- content replacement 记录。
+1. 将主请求标记为结束，允许新输入。
+2. 保存已经显示的部分文本。
+3. 向模型请求、工具和子进程传播中止信号。
+4. 关闭权限和输入对话框。
+5. 为未完成工具请求生成中止结果。
+6. 保存中止事件和当前消息。
 
-然后消息并入 state，transition 为 `next_turn`，重新请求模型。
+迟到的流式事件会根据 generation ID 丢弃。后台任务根据自身生命周期继续或停止。
 
-## 8. 工具失败循环保护
+## 12. 恢复流程
 
-`toolFailureLoopGuard` 跟踪：
+错误发生后，会话编排层根据错误类别选择恢复操作。
 
-- 同一 tool + normalized error category。
-- 对同一路径重复的修改失败。
-- 无成功 mutation 打断的持续失败签名。
+| 错误 | 恢复方式 |
+|---|---|
+| 临时网络错误 | 重发相同 API 请求 |
+| 上下文过长 | 缩减或压缩历史后重新请求 |
+| 输出达到上限 | 提高允许上限或请求续写 |
+| 模型持续过载 | 切换备用 model 或 provider |
+| 流式连接停滞 | 在允许条件下改用非流式请求 |
+| 工具参数错误 | 将错误结果返回模型 |
+| 不可恢复错误 | 保存错误并结束本轮 |
 
-达到阈值先给 advisory，继续重复则 terminal `tool_failure_loop`。父 query abort 产生的 synthetic result 不算工具失败，tool 自身 timeout 则算。
+每类恢复操作记录已执行次数。相同恢复不会无限重复。
 
-## 9. Stop hook 和普通结束
+## 13. 结束处理
 
-有效模型终止后，`query/stopHooks.ts` 汇总：
+本轮结束时，系统完成以下工作：
 
-- Stop 或 SubagentStop hooks。
-- blocking reason。
-- computer-use 等 turn cleanup。
-- continuation decisions。
+- 合并并保存最终 Assistant 消息。
+- 运行适用的 Stop 或失败 Hook。
+- 更新 token、成本和时间统计。
+- 处理任务完成和会话通知。
+- 清理模型、工具和权限等待资源。
+- 释放主请求状态。
+- 向入口模块发送最终结果。
 
-没有 blocking 时返回 terminal completed。API error 不进入普通 stop hook，因为它没有可审查的真实模型回答。
+## 14. 三类限制
 
-## 10. 取消路径
+| 限制 | 约束对象 | 达到限制后的行为 |
+|---|---|---|
+| Turn | 整体模型与工具推进次数 | 结束本轮并说明原因 |
+| Step | Agent 的工具使用步数 | 要求模型给出最终总结 |
+| Token budget | 模型输出消耗 | 停止生成或有限续写 |
 
-### 10.1 Streaming 期间
+三类限制分别计数。后台任务还具有独立超时和停止规则。
 
-- 先 drain StreamingToolExecutor 或补 missing results。
-- 按 abort reason 生成 system warning。
-- 只有真实 user abort 添加 user interruption message。
-- terminal `aborted_streaming`。
-
-### 10.2 工具期间
-
-- 工具共享/派生 abort signal。
-- 已运行工具返回 abort result。
-- 完成必要 cleanup。
-- terminal `aborted_tools`。
-
-`background`、`interrupt`、`query-timeout` 不应伪装成“用户按了 ESC”。
-
-## 11. Turn、Step、Token 三种限制
-
-- **maxTurns**：模型请求/工具轮的总体上限，命中后产生附件并终止。
-- **maxSteps**：Agent 定义的工具使用步数上限，要求最后总结。
-- **token budget**：限制输出消耗，可触发 continuation 直到预算用尽。
-
-三者语义不同，不能用同一个 counter。
-
-## 12. 正常时序示例
+## 15. 完整时序
 
 ```mermaid
 sequenceDiagram
-  participant U as User
-  participant R as REPL
-  participant Q as queryLoop
-  participant M as Model
-  participant T as Tool pipeline
-  U->>R: 修复 bug
-  R->>Q: messages + context + tools
-  Q->>M: request #1
-  M-->>Q: text + tool_use(Read)
-  Q->>T: validate/permission/call
-  T-->>Q: tool_result(file)
-  Q->>M: request #2 with result
-  M-->>Q: tool_use(Edit) + tool_use(Test)
-  Q->>T: Edit serial, then Test
-  T-->>Q: results
-  Q->>M: request #3
-  M-->>Q: final text, end_turn
-  Q->>Q: stop hooks
-  Q-->>R: completed
+  participant U as 用户
+  participant I as 入口
+  participant O as 会话编排
+  participant C as 上下文
+  participant M as 模型
+  participant T as 工具
+  participant P as 持久化
+
+  U->>I: 提交任务
+  I->>O: 创建用户消息
+  O->>C: 准备上下文
+  C->>M: 发送请求
+  M-->>O: 返回工具请求
+  O->>T: 校验 授权 执行
+  T-->>O: 返回工具结果
+  O->>P: 保存工具调用和结果
+  O->>C: 加入工具结果
+  C->>M: 继续请求
+  M-->>O: 返回最终文本
+  O->>P: 保存最终消息
+  O-->>I: 返回结果
+  I-->>U: 展示回答
 ```
 
-下一章：[05 上下文、Prompt、记忆与压缩](05-context-prompt-memory.md)。
+下一章说明上下文模块怎样选择、压缩和缓存模型需要的信息。
