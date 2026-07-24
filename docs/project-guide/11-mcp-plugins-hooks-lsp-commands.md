@@ -1,8 +1,8 @@
 # 11. MCP、插件、Hooks、LSP 与命令系统
 
-OpenClaude 有多条扩展路径。它们最终可能都给模型增加能力，但加载时机、信任边界和控制流不同。
+OpenClaude 有多条扩展路径。它们均可为模型增加能力。每条路径具有独立的加载时机、信任边界和控制流。
 
-| 机制 | 本质 | 主要产物 | 是否独立进程/网络 |
+| 机制 | 本质 | 主要产物 | 独立进程/网络属性 |
 |---|---|---|---|
 | Slash command / skill | 文本展开或本地控制命令 | prompt、状态变更、Ink UI | 不一定 |
 | Plugin | 本地扩展包和分发单位 | commands、skills、agents、hooks、MCP、LSP、output styles | 取决于组件 |
@@ -20,19 +20,19 @@ OpenClaude 有多条扩展路径。它们最终可能都给模型增加能力，
 
 - 参数、允许工具、模型和 effort。
 - 来源、插件元数据、适用文件 glob。
-- 是否允许用户调用、是否允许模型调用。
-- `context: inline | fork`；fork 时通过指定 agent 在独立上下文执行。
+- 用户调用权限和模型调用权限。
+- `context: inline | fork`。fork 时通过指定 agent 在独立上下文执行。
 - skill 激活期间注册的 hooks。
 
-SkillTool 只暴露符合条件且可由模型调用的 prompt command。是否能在 `/` 自动补全中显示、用户能否手动调用、模型能否调用，是三个独立条件。
+SkillTool 只暴露符合条件且可由模型调用的 prompt command。`/` 自动补全展示权限、用户手动调用权限和模型调用权限是三个独立条件。
 
 ### `local`
 
-惰性加载 TypeScript `call()`，返回文本、compact 结果或 `skip`。它可以支持非交互模式，但不能渲染 Ink 组件。
+惰性加载 TypeScript `call()`，返回文本、compact 结果或 `skip`。该类型支持非交互模式。Ink 组件由 `local-jsx` 类型渲染。
 
 ### `local-jsx`
 
-惰性加载并返回 React/Ink 节点，用于 `/config`、`/resume`、`/model` 等交互对话框。无 TTY 或远程桥接场景不能假设它可执行。
+惰性加载并返回 React/Ink 节点，用于 `/config`、`/resume`、`/model` 等交互对话框。执行条件包括本地 TTY 和本地交互界面。
 
 ### 查找和安全过滤
 
@@ -40,12 +40,12 @@ SkillTool 只暴露符合条件且可由模型调用的 prompt command。是否�
 
 远程模式有两级过滤：
 
-- `REMOTE_SAFE_COMMANDS` 决定远程 REPL 中保留哪些本地命令。
-- Bridge 输入允许 prompt command；`local` 必须进入显式 allowlist；`local-jsx` 一律拒绝，避免移动端输入弹出本地终端 UI。
+- `REMOTE_SAFE_COMMANDS` 定义远程 REPL 保留的本地命令集合。
+- Bridge 输入允许 prompt command。`local` 必须进入显式 allowlist。`local-jsx` 一律拒绝，避免移动端输入弹出本地终端 UI。
 
 相关源码：`src/types/command.ts`、`src/commands.ts`、`src/utils/slashCommandParsing.ts`。
 
-## 11.2 Plugin 是能力包，不是新执行引擎
+## 11.2 Plugin 是能力包
 
 一个插件可包含：
 
@@ -62,7 +62,7 @@ plugin-root/
   settings.json
 ```
 
-manifest 可以声明额外路径、内联 command/hook、MCPB 包以及 MCP/LSP 配置。`LoadedPlugin` 只是标准化后的索引；具体组件由各自 loader 再转成系统已有对象：
+manifest 可以声明额外路径、内联 command/hook、MCPB 包以及 MCP/LSP 配置。`LoadedPlugin` 保存标准化索引。具体组件由各自 loader 转换成系统已有对象：
 
 ```text
 Plugin command  -> Command
@@ -73,27 +73,27 @@ Plugin LSP      -> ScopedLspServerConfig
 Output style    -> system prompt customization
 ```
 
-因此，插件工具调用仍经过第 7 章的权限和 tool execution pipeline；插件 hook 仍经过本章 hook 聚合器；插件 MCP server 仍由 MCP connection manager 管理。
+插件工具调用经过第 7 章的权限和 tool execution pipeline。插件 hook 经过本章 hook 聚合器。插件 MCP server 由 MCP connection manager 管理。
 
 ### 装载过程
 
 1. 从安装记录、市场和启用设置解析候选插件。
-2. 读取并 schema 校验 manifest；没有 manifest 时可构造最小 manifest。
+2. 读取并 schema 校验 manifest。没有 manifest 时可构造最小 manifest。
 3. 解析默认目录及 manifest 附加路径。
-4. 校验解析后的组件路径仍位于插件根目录，拒绝路径逃逸。
+4. 校验解析后的组件路径位于插件根目录，拒绝路径逃逸。
 5. 分别加载 command、skill、agent、hook、MCP、LSP、output style。
-6. 将错误作为 `PluginError` 保存；一个组件失败不必使其他插件全部失败。
+6. 将错误作为 `PluginError` 保存。一个组件失败不必使其他插件全部失败。
 
-插件级 `settings.json` 优先于 manifest 内联 settings，但整体位于普通用户/项目/flag/policy 配置之下。
+插件级 `settings.json` 优先于 manifest 内联 settings。插件设置整体位于普通用户、项目、flag 和 policy 配置之下。
 
 ### 启用、安装与信任
 
-“已安装”和“在某 scope 启用”分开记录。同一插件可安装在用户层，却在项目层显式启用或本地层禁用。管理策略可以：
+“已安装”和“在某 scope 启用”分开记录。同一插件可以安装在用户层。项目层和本地层分别控制其启用状态。管理策略可以：
 
 - 限制已知 marketplace。
 - 阻止 marketplace 或具体 plugin。
 - 只允许插件提供某些 customization surface。
-- 控制跨 marketplace 依赖；根 marketplace 的 allowlist 不向下传递信任。
+- 控制跨 marketplace 依赖。根 marketplace 的 allowlist 不向下传递信任。
 
 安装 UI 明确提示：插件可能包含 MCP server、文件和可执行软件，使用者必须信任来源。项目启动检查要在“信任当前目录”之后运行，防止仓库内容在信任前触发安装或执行。
 
@@ -111,7 +111,7 @@ Output style    -> system prompt customization
 6. 重建 LSP manager 配置。
 7. 最后原子替换 plugin hooks。
 
-被删除插件的 hooks 会立即裁剪；新增 hooks 等 `/reload-plugins` 完整装载。旧 hook 集保持有效直到新集合就绪，避免刷新窗口中 Stop hook 突然消失。
+被删除插件的 hooks 会立即裁剪。新增 hooks 等 `/reload-plugins` 完整装载。旧 hook 集保持有效直到新集合就绪，避免刷新窗口中 Stop hook 突然消失。
 
 相关源码：`src/utils/plugins/pluginLoader.ts`、`src/utils/plugins/refresh.ts`、`src/services/plugins/pluginOperations.ts`。
 
@@ -128,7 +128,7 @@ MCP server 配置支持以下 transport：
 | `sdk` | SDK 控制 transport 或进程内 transport |
 | `sse-ide` | IDE 内部连接 |
 
-配置 scope 包含 local、user、project、dynamic、enterprise、managed、plugin/Claude AI 等来源。合并后还要经过管理员规则：例如 `allowManagedMcpServersOnly` 会排除非托管 server，disabled 配置会产生 `disabled` 状态而不是尝试连接。
+配置 scope 包含 local、user、project、dynamic、enterprise、managed、plugin/Claude AI 等来源。合并结果还要经过管理员规则。`allowManagedMcpServersOnly` 会排除非托管 server。disabled 配置会直接产生 `disabled` 状态。
 
 每个 server 的状态为：
 
@@ -156,7 +156,7 @@ SSE 等可恢复连接失败后最多自动重试 5 次，指数退避从 1 秒�
 mcp__<normalized-server-name>__<normalized-tool-name>
 ```
 
-这既避免与内建工具冲突，也让权限规则能精确匹配 server 和 tool。SDK 进程内 server 可在约定条件下跳过此前缀。
+该命名规则避免与内建工具冲突。权限规则可以精确匹配 server 和 tool。SDK 进程内 server 可在约定条件下跳过此前缀。
 
 server description/instructions 最多送入约 2,048 字符，避免自动生成的 OpenAPI 文档直接占满上下文。工具结果还经过 MCP 自己的二进制持久化/截断，再进入通用的大结果预算。
 
@@ -169,13 +169,13 @@ MCP `tools/list_changed`、`prompts/list_changed`、`resources/list_changed` 通
 3. 按 `mcp__server__` 前缀替换旧项。
 4. 批量写回 AppState。
 
-不会把旧工具与新工具简单相加，否则 server 删除工具后模型仍可能调用陈旧定义。
+系统按 server 前缀替换旧工具集合。该策略会同步移除 server 已删除的工具定义。
 
 ### 工具调用
 
-MCP 工具仍是标准 `Tool`：先 schema 校验、权限判断、PreToolUse hook，再调用 MCP client，最后运行 PostToolUse/Failure hook并形成 tool result。默认调用超时为 300 秒，可由 `MCP_TOOL_TIMEOUT` 覆盖。
+MCP 工具实现标准 `Tool` 接口。执行顺序依次为 schema 校验、权限判断、PreToolUse hook、MCP client 调用、PostToolUse/Failure hook 和 tool result 构造。默认调用超时为 300 秒，可由 `MCP_TOOL_TIMEOUT` 覆盖。
 
-若 Streamable HTTP 返回“HTTP 404 且 JSON-RPC code -32001”，系统把它识别为 MCP session 过期，清连接缓存、重新连接并重试，而不是把所有普通 404 都当作 session 失效。
+Streamable HTTP 返回“HTTP 404 且 JSON-RPC code -32001”时，系统将其识别为 MCP session 过期。处理过程会清除连接缓存、重新连接并重试。其他 404 继续使用普通错误分类。
 
 ### OAuth
 
@@ -195,10 +195,10 @@ MCP 工具仍是标准 `Tool`：先 schema 校验、权限判断、PreToolUse ho
 MCP server 可请求：
 
 - roots：返回当前允许的工作根。
-- elicitation：要求用户接受、拒绝或取消结构化输入；hook 可在 UI 前后参与决定。
+- elicitation：要求用户接受、拒绝或取消结构化输入。hook 可在 UI 前后参与决定。
 - channel notification：经 channel allowlist、策略和权限 relay 后入消息队列。
 
-server 发来的内容不是自动可信用户输入。channel 消息要带来源包装并经过 server gate；permission relay 有明确 pending request map 和用户响应对应关系。
+server 发来的内容属于外部输入。channel 消息携带来源包装并经过 server gate。permission relay 使用明确的 pending request map 和用户响应对应关系。
 
 相关源码：`src/services/mcp/client.ts`、`types.ts`、`config.ts`、`auth.ts`、`useManageMCPConnections.ts`。
 
@@ -229,7 +229,7 @@ CwdChanged, FileChanged
 | `agent` | 启动带工具的 verifier agent |
 | `callback` | SDK/内部注册的异步函数 |
 
-每个 hook 有独立超时，同时受调用方 AbortSignal 约束。长任务可先返回 `{async:true, asyncTimeout}`，注册到异步 hook registry；完成通知再进入消息队列。
+每个 hook 有独立超时，同时受调用方 AbortSignal 约束。长任务可先返回 `{async:true, asyncTimeout}`，注册到异步 hook registry。完成通知再进入消息队列。
 
 ### 结构化结果
 
@@ -250,15 +250,15 @@ CwdChanged, FileChanged
 - WorktreeCreate 返回新的 worktree path。
 - FileChanged/CwdChanged 更新监听路径。
 
-聚合器必须区分 blocking error、non-blocking error、cancelled 和 success。非阻断 hook 失败应可观察，但不能默认中止主循环；阻断决定则必须在工具真正执行前生效。
+聚合器必须区分 blocking error、non-blocking error、cancelled 和 success。非阻断 hook 失败需要保持可观察。主循环会继续执行。阻断决定必须在工具执行前生效。
 
 ### Stop hook 防递归
 
-Stop hook 可以阻止结束并要求模型继续，但需要携带“当前正在处理 stop hook”的状态，防止新一轮再次无条件触发同一 Stop hook而无限循环。目标继续条件还会与 Stop 结果共同决定是否真正结束。
+Stop hook 可以阻止结束并要求模型继续。该路径需要携带“当前正在处理 stop hook”的状态。该状态防止新一轮再次无条件触发同一 Stop hook。目标继续条件会与 Stop 结果共同决定最终状态。
 
 ### 可观测性
 
-hook started/progress/response 使用独立事件通道，不混入模型消息流。没有 SDK handler 时最多缓冲 100 条；SessionStart 和 Setup 始终发出，其他事件仅在 `includeHookEvents` 或 remote 模式启用。完整 stdout/stderr 仍写 debug log。
+hook started/progress/response 使用独立事件通道，不混入模型消息流。没有 SDK handler 时最多缓冲 100 条。SessionStart 和 Setup 始终发出，其他事件仅在 `includeHookEvents` 或 remote 模式启用。完整 stdout/stderr 写入 debug log。
 
 相关源码：`src/utils/hooks.ts`、`src/types/hooks.ts`、`src/schemas/hooks.ts`、`src/query/stopHooks.ts`。
 
@@ -273,7 +273,7 @@ not-started -> pending -> success
                      -> failed --显式重试--> pending
 ```
 
-初始化只解析配置和建立 extension map；具体 language server 在某文件首次请求时惰性启动。多个 server 声明同一扩展名时，当前实现使用注册顺序中的第一个。
+初始化只解析配置和建立 extension map。具体 language server 在某文件首次请求时惰性启动。多个 server 声明同一扩展名时，当前实现使用注册顺序中的第一个。
 
 `LSPTool` 支持 definition、references、hover、document/workspace symbols、implementation 和 call hierarchy。它：
 
@@ -282,7 +282,7 @@ not-started -> pending -> success
 - 调用前检查文件存在、普通文件、读取权限和约 10 MB 大小限制。
 - 等待尚未完成的 manager 初始化。
 - 用 `didOpen`/`didClose` 管理文档，并收集 diagnostics 被动反馈。
-- 单个 server 初始化失败不会阻止其他 server；整体 shutdown 聚合错误。
+- 单个 server 初始化失败不会阻止其他 server。整体 shutdown 聚合错误。
 
 裸模式/简化非交互入口跳过 LSP。插件刷新会递增 generation，使旧初始化 promise 不能覆盖新 manager 状态，并尽力关闭旧子进程。
 
@@ -306,7 +306,7 @@ not-started -> pending -> success
 2. 插件路径必须限制在插件根目录。
 3. MCP 动态 list 变化必须替换旧 server 项。
 4. Hook 输出必须经过结构校验，文本 stdout 不能直接成为权限决定。
-5. LSP 对文件的访问仍受读取权限约束。
+5. LSP 对文件的访问受读取权限约束。
 6. 无 TTY/remote 模式不能执行需要本地 Ink UI 的命令。
 
 下一章集中整理错误分类、重试、取消、上下文溢出和资源耗尽等特殊场景。

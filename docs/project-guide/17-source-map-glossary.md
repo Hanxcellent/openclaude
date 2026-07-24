@@ -1,6 +1,6 @@
 # 17. 源码导航、术语表与学习路线
 
-本章不是重复目录树，而是提供“遇到一个问题，先读哪里”的索引。源码持续演进，优先搜索导出符号和数据类型，不依赖固定行号。
+本章提供按问题定位源码的索引。源码持续演进。检索应优先使用导出符号和数据类型。固定行号仅表示当前快照位置。
 
 ## 17.1 最小源码主干
 
@@ -20,11 +20,11 @@ bin/openclaude
   -> src/utils/log.ts + src/utils/sessionStorage.ts
 ```
 
-先理解这条主干，再进入 provider、MCP、Agent 或 UI 子系统；否则容易只看到局部工具而失去控制流。
+阅读顺序应从这条主干开始，再进入 provider、MCP、Agent 或 UI 子系统。该顺序有助于保持完整控制流。
 
 ## 17.2 顶层目录职责
 
-| 目录 | 主要职责 | 何时进入 |
+| 目录 | 主要职责 | 进入时机 |
 |---|---|---|
 | `src/entrypoints/` | CLI、init、MCP、SDK 和公开类型 | 入口、参数、宿主集成 |
 | `src/components/` | React/Ink 页面、消息、Dialog | 终端显示和交互 |
@@ -50,163 +50,163 @@ bin/openclaude
 | `src/grpc/` | 开发用 gRPC adapter | 非生产 RPC 实验 |
 | `scripts/` | build、生成、诊断、发布守卫 | 工程/构建 |
 
-存在 `daemon`、`proactive`、`environment-runner`、`self-hosted-runner` 等目录不代表 open build 当前启用；必须对照 `scripts/build.ts` 的 feature flags 和 stub。
+`daemon`、`proactive`、`environment-runner`、`self-hosted-runner` 等目录具有独立的构建状态。当前可用性需要对照 `scripts/build.ts` 的 feature flags 和 stub。
 
 ### 17.2.1 其余顶层目录与当前状态
 
-这些目录不都位于主循环上，但阅读仓库时会遇到：
+以下目录位于主循环外围，阅读仓库时会遇到：
 
 | 目录 | 职责 | 当前 open build 的判断 |
 |---|---|---|
 | `src/assistant/` | KAIROS 持久 assistant 的 session 选择与历史 | `KAIROS=false`，entitlement gate 恒 false |
-| `src/buddy/` | 终端像素伙伴、动作效果和 shot clock 观察 | `BUDDY=true`；属于 UI/反馈，不改变 query 语义 |
-| `src/coordinator/` | coordinator prompt、worker tools 和 session mode | 代码已构建；还需 `CLAUDE_CODE_COORDINATOR_MODE` 运行时开启 |
+| `src/buddy/` | 终端像素伙伴、动作效果和 shot clock 观察 | `BUDDY=true`。属于 UI/反馈，不改变 query 语义 |
+| `src/coordinator/` | coordinator prompt、worker tools 和 session mode | 代码已构建。还需 `CLAUDE_CODE_COORDINATOR_MODE` 运行时开启 |
 | `src/daemon/` | daemon supervisor/worker registry | `DAEMON=false`，入口为 inert/stub |
 | `src/environment-runner/` | BYOC headless runner | 当前为 inert stub |
 | `src/i18n/` | locale 检测和命令文案字典 | 当前提供英文、越南文与 fallback |
 | `src/jobs/` | template/job-directory turn classifier | 当前实现明确为 inert stub |
-| `src/migrations/` | 启动时迁移旧设置、模型名和开关 | live startup compatibility，不是数据库 migration 框架 |
+| `src/migrations/` | 启动时迁移旧设置、模型名和开关 | live startup compatibility。范围限于配置迁移 |
 | `src/native-ts/` | 原生能力的 TypeScript 替代，如 fuzzy file index、Yoga/color helpers | open build 降低 native addon 依赖 |
 | `src/outputStyles/` | 从 Markdown/frontmatter 加载输出风格 prompt | 与 plugin output style cache 合并 |
 | `src/plugins/` | 内置插件注册表和 bundled plugin 初始化 | 与 `src/utils/plugins/` 的 marketplace/安装实现分工 |
 | `src/proactive/` | proactive active/pause/tick 状态 | `PROACTIVE=false`，主入口分支被裁剪 |
-| `src/proto/` | `openclaude.proto` 双向 Chat stream 契约 | 供开发 gRPC adapter 使用，不是 npm 公共入口 |
+| `src/proto/` | `openclaude.proto` 双向 Chat stream 契约 | 供开发 gRPC adapter 使用。npm package exports 未公开 |
 | `src/self-hosted-runner/` | self-hosted worker register/poll | 当前为 inert stub |
-| `src/skills/` | bundled skill registry、目录加载和 MCP skill builder | 多个 bundled skills live；各 skill 仍可有独立 gate |
+| `src/skills/` | bundled skill registry、目录加载和 MCP skill builder | 多个 bundled skills live。各 skill 可以具有独立 gate |
 | `src/upstreamproxy/` | CCR remote container 的本地 relay、CA 和子进程代理注入 | 仅 `CLAUDE_CODE_REMOTE` 等受控环境条件满足时启用 |
 | `src/vim/` | Vim motion、operator、text object 和 transition | TUI 输入模式子系统 |
 | `src/voice/` | voice feature/auth 可见性判断 | `VOICE_MODE=false`，当前产物不可用 |
 
-`src/types/`、`src/schemas/` 和 `src/constants/` 是横切定义层；`src/native-ts/` 是替代实现而不是独立入口；`src/__tests__/`、`src/test/` 分别放跨模块回归和共享测试工具。
+`src/types/`、`src/schemas/` 和 `src/constants/` 是横切定义层。`src/native-ts/` 提供替代实现。`src/__tests__/` 放置跨模块回归测试。`src/test/` 放置共享测试工具。
 
-## 17.3 按问题定位源码
+## 17.3 按主题定位源码
 
 ### 启动与参数
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| 安装命令为何启动失败 | `bin/openclaude` | `package.json` engines/exports |
-| 参数在哪里定义 | `src/entrypoints/cli.tsx` | `src/main.tsx` action handler |
+| 安装命令启动失败 | `bin/openclaude` | `package.json` engines/exports |
+| 参数定义 | `src/entrypoints/cli.tsx` | `src/main.tsx` action handler |
 | 启动初始化顺序 | `src/entrypoints/init.ts` | `src/setup.ts`、`src/interactiveHelpers.tsx` |
-| print 与 TUI 如何分流 | `src/main.tsx` | `src/cli/print.ts` |
-| 退出为何未清理 | `src/utils/gracefulShutdown.ts` | `src/utils/cleanupRegistry.ts` |
+| print 与 TUI 分流 | `src/main.tsx` | `src/cli/print.ts` |
+| 退出清理失败 | `src/utils/gracefulShutdown.ts` | `src/utils/cleanupRegistry.ts` |
 
 ### 输入与命令
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| Enter 后发生什么 | PromptInput/REPL submit 路径 | `src/utils/processUserInput/` |
-| slash command 如何注册 | `src/commands.ts` | `src/commands/<name>/` |
-| skill/command 如何加载 | `src/utils/skills/` | plugin command loader |
-| `!cmd` 如何执行 | `processBashCommand.tsx` | BashTool/LocalShellTask |
-| 运行中输入去哪了 | `src/hooks/useCommandQueue.ts` | QueryGuard/queue processor |
+| Enter 提交流程 | PromptInput/REPL submit 路径 | `src/utils/processUserInput/` |
+| slash command 注册 | `src/commands.ts` | `src/commands/<name>/` |
+| skill/command 加载 | `src/utils/skills/` | plugin command loader |
+| `!cmd` 执行 | `processBashCommand.tsx` | BashTool/LocalShellTask |
+| 运行中输入处理 | `src/hooks/useCommandQueue.ts` | QueryGuard/queue processor |
 
 ### Agent loop
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
 | 一轮模型请求 | `src/query.ts` | `src/QueryEngine.ts` |
-| stream 如何变消息 | `src/services/api/claude.ts` | provider adapter |
-| 工具何时执行 | query 的 tool-use branch | `src/tools.ts`/tool execution helpers |
-| Stop hook 何时运行 | query terminal branch | Hook service |
-| Abort 为什么没生效 | query AbortSignal | runTools → tool.call → child process |
-| 失败为何不断循环 | `src/query/toolFailureLoopGuard.ts` | retry/transition flags |
+| stream 消息转换 | `src/services/api/claude.ts` | provider adapter |
+| 工具执行时机 | query 的 tool-use branch | `src/tools.ts`/tool execution helpers |
+| Stop hook 运行时机 | query terminal branch | Hook service |
+| Abort 传播失败 | query AbortSignal | runTools → tool.call → child process |
+| 失败循环 | `src/query/toolFailureLoopGuard.ts` | retry/transition flags |
 
 ### Context 与 prompt
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| system prompt 有哪些段 | `src/utils/systemPrompt.ts`、`src/constants/systemPromptSections.ts` | tool prompts |
-| CLAUDE/OPENCLAUDE 指令如何进入 | `src/context.ts` | file discovery/settings |
-| attachment 何时注入 | attachment collection helpers | query context build |
-| token 如何估算 | token counting/context helpers | provider usage |
-| compact 如何触发 | `src/services/compact/` | query recovery |
-| context collapse 是什么 | `src/services/contextCollapse/` | build feature |
-| memory 存在哪里 | `src/memdir/` | SessionMemory/extractMemories |
+| system prompt 分段 | `src/utils/systemPrompt.ts`、`src/constants/systemPromptSections.ts` | tool prompts |
+| CLAUDE/OPENCLAUDE 指令注入 | `src/context.ts` | file discovery/settings |
+| attachment 注入时机 | attachment collection helpers | query context build |
+| token 估算 | token counting/context helpers | provider usage |
+| compact 触发 | `src/services/compact/` | query recovery |
+| context collapse 定义 | `src/services/contextCollapse/` | build feature |
+| memory 存储位置 | `src/memdir/` | SessionMemory/extractMemories |
 
 ### Provider 与模型
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| 当前 provider 从哪来 | provider profile utilities | settings/env/CLI precedence |
-| model 能力怎么描述 | `src/integrations/` | generated artifacts |
+| 当前 provider 来源 | provider profile utilities | settings/env/CLI precedence |
+| model 能力描述 | `src/integrations/` | generated artifacts |
 | Anthropic 请求 | `src/services/api/claude.ts` | auth/client factory |
 | OpenAI-compatible 请求 | `src/services/api/openaiShim.ts` | stream adapter/errors |
 | Gemini/Vertex 请求 | `src/services/api/geminiVertexClient.ts` | Google auth |
 | Bedrock 请求 | API client factory | AWS credential helpers |
-| 错误为何被重试 | `src/services/api/errors.ts`、retry helper | query transition |
+| 错误重试 | `src/services/api/errors.ts`、retry helper | query transition |
 | provider fallback | provider profile/fallback helpers | query recovery |
 
-新增 provider 时先读 `docs/integrations/overview.md` 和对应 `docs/integrations/how-to/`，不要从复制一个 client 文件开始。
+新增 provider 时应先阅读 `docs/integrations/overview.md` 和对应 `docs/integrations/how-to/`。实现过程应从 descriptor 和协议差异分析开始。
 
 ### 工具与权限
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| 工具为何对模型不可见 | `src/tools.ts` | feature/model/mode filter |
-| 参数为何失败 | Tool `inputSchema` | provider tool JSON parsing |
-| 为何弹权限框 | `src/hooks/useCanUseTool.tsx` | tool `checkPermissions` |
-| allow/deny 从哪来 | `src/utils/permissions/permissionsLoader.ts` | settings sources |
-| 路径为何被拒 | `pathValidation.ts` | `filesystem.ts`/fsOperations |
-| Bash 如何判定只读 | `src/utils/bash/` | `src/utils/shell/` |
-| sandbox 是否生效 | `sandbox-adapter.ts` | `/sandbox`/doctor |
-| 大输出去了哪里 | `src/utils/toolResultStorage.ts` | transcript/UI preview |
+| 工具可见性 | `src/tools.ts` | feature/model/mode filter |
+| 参数校验失败 | Tool `inputSchema` | provider tool JSON parsing |
+| 权限框触发 | `src/hooks/useCanUseTool.tsx` | tool `checkPermissions` |
+| allow/deny 来源 | `src/utils/permissions/permissionsLoader.ts` | settings sources |
+| 路径拒绝 | `pathValidation.ts` | `filesystem.ts`/fsOperations |
+| Bash 只读判定 | `src/utils/bash/` | `src/utils/shell/` |
+| sandbox 生效状态 | `sandbox-adapter.ts` | `/sandbox`/doctor |
+| 大输出存储 | `src/utils/toolResultStorage.ts` | transcript/UI preview |
 
 ### Agent、Task 与团队
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| Agent 定义如何合并 | AgentTool/agent definition loaders | plugins/settings |
-| 子 Agent 如何运行 | `src/tools/AgentTool/` | `runAgent`/query fork |
-| background 如何返回 | `src/tasks/LocalAgentTask/` | task notification queue |
-| shell task 如何停止 | `src/tasks/LocalShellTask/` | `stopTask.ts` |
+| Agent 定义合并 | AgentTool/agent definition loaders | plugins/settings |
+| 子 Agent 运行 | `src/tools/AgentTool/` | `runAgent`/query fork |
+| background 返回 | `src/tasks/LocalAgentTask/` | task notification queue |
+| shell task 停止 | `src/tasks/LocalShellTask/` | `stopTask.ts` |
 | teammate 与 subagent 差别 | `InProcessTeammateTask` | `src/utils/swarm/` |
-| 消息如何跨 Agent | `SendMessageTool` | team mailbox |
+| 跨 Agent 消息 | `SendMessageTool` | team mailbox |
 | 协作任务依赖 | TaskCreate/Update/List tools | todo DAG utilities |
-| worktree 如何隔离 | Enter/ExitWorktreeTool | Git worktree utils |
+| worktree 隔离 | Enter/ExitWorktreeTool | Git worktree utils |
 
 ### UI 与终端
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
 | 主界面组成 | `src/components/App.tsx` | REPL/input/messages |
-| 状态从何订阅 | `src/state/` | selector/hooks |
+| 状态订阅 | `src/state/` | selector/hooks |
 | ESC 取消顺序 | `src/hooks/useCancelRequest.ts` | modal/keybinding context |
-| Message 怎样渲染 | `Messages.tsx`/`Message.tsx` | content block components |
-| 滚动为何跳动 | virtual message/fullscreen paths | custom Ink renderer |
+| Message 渲染 | `Messages.tsx`/`Message.tsx` | content block components |
+| 滚动跳动 | virtual message/fullscreen paths | custom Ink renderer |
 | CJK 宽度错误 | `src/ink/` line width/bidi | terminal size hooks |
-| keybinding 如何覆盖 | `src/keybindings/` | settings/keybinding warnings |
+| keybinding 覆盖 | `src/keybindings/` | settings/keybinding warnings |
 
 ### 配置与会话
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
 | 配置优先级 | `src/utils/settings/settings.ts` | constants/types/schema |
-| 环境变量何时应用 | `src/utils/managedEnv.ts` | trust/startup |
-| JSONL 写在哪里 | `src/utils/log.ts` | sessionStorage |
-| resume 读哪条链 | resume/log selector | transcript loaders |
-| rewind 做什么 | `src/commands/rewind/` | file history snapshot |
-| branch 做什么 | `src/commands/branch/` | parent UUID/session IDs |
-| compact boundary 如何保存 | compact service/log events | resume projection |
+| 环境变量应用时机 | `src/utils/managedEnv.ts` | trust/startup |
+| JSONL 写入位置 | `src/utils/log.ts` | sessionStorage |
+| resume 活动链 | resume/log selector | transcript loaders |
+| rewind 作用 | `src/commands/rewind/` | file history snapshot |
+| branch 作用 | `src/commands/branch/` | parent UUID/session IDs |
+| compact boundary 保存 | compact service/log events | resume projection |
 
 ### 扩展系统
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
-| MCP server 为何未连接 | `src/services/mcp/` | config/auth/transport |
-| MCP tool 如何包装 | `src/tools/MCPTool/` | tool discovery |
-| plugin 如何发现 | `src/utils/plugins/` | startup checks/cache |
-| plugin 依赖为何拒绝 | dependencyResolver | marketplace policy |
-| Hook 为何阻止工具 | `src/utils/hooks/` | Hook output schema |
+| MCP server 连接失败 | `src/services/mcp/` | config/auth/transport |
+| MCP tool 包装 | `src/tools/MCPTool/` | tool discovery |
+| plugin 发现 | `src/utils/plugins/` | startup checks/cache |
+| plugin 依赖拒绝 | dependencyResolver | marketplace policy |
+| Hook 工具阻断 | `src/utils/hooks/` | Hook output schema |
 | HTTP Hook SSRF | `src/utils/hooks/ssrfGuard.ts` | proxy/sandbox network |
 | LSP server 生命周期 | `src/services/lsp/manager.ts` | plugin integration |
 
 ### SDK 与远程
 
-| 问题 | 第一站 | 后续 |
+| 定位主题 | 第一站 | 后续 |
 |---|---|---|
 | SDK 公开 API | `src/entrypoints/sdk.d.ts` | `sdk/index.ts` |
-| `query()` 如何复用核心 | `sdk/query.ts` | env mutex/permission adapter |
+| `query()` 核心复用 | `sdk/query.ts` | env mutex/permission adapter |
 | V2 session | `sdk/v2.ts` | sessions/transcript |
 | SDK permission | `sdk/permissions.ts` | external callback |
 | Remote WebSocket | `src/remote/SessionsWebSocket.ts` | RemoteSessionManager |
@@ -222,7 +222,7 @@ bin/openclaude
 
 ### Content block
 
-一条消息内部的结构单元。常见为 text、thinking、tool_use、tool_result、image/document。不要把 assistant message 等同于单个字符串。
+一条消息内部的结构单元。常见类型包括 text、thinking、tool_use、tool_result、image/document。assistant message 可以包含多个结构块。
 
 ### Tool
 
@@ -234,15 +234,15 @@ bin/openclaude
 
 ### Query
 
-一次从现有消息开始、可能包含多个 model step 和 tool step 的异步执行。它不等于一次 HTTP 请求。
+一次从现有消息开始的异步执行。一次 query 可以包含多个 model step、tool step 和 HTTP 请求。
 
 ### Turn / Step
 
-Turn 更接近用户发起的一轮交互；step 常表示一次模型调用到下一次模型调用之间的推进。具体限制代码需按使用点确认，不能把所有计数统称“轮数”。
+Turn 更接近用户发起的一轮交互。step 常表示一次模型调用到下一次模型调用之间的推进。具体限制代码需按使用点确认，不能把所有计数统称“轮数”。
 
 ### AppState
 
-TUI 和业务层可订阅的当前状态投影。它不是 transcript，也不拥有所有模块级资源。
+TUI 和业务层可订阅的当前状态投影。transcript 和模块级资源由各自存储管理。
 
 ### Bootstrap state
 
@@ -254,11 +254,11 @@ TUI 和业务层可订阅的当前状态投影。它不是 transcript，也不�
 
 ### Command queue
 
-将用户 follow-up、steer、task notification、remote message 等按安全点送入主循环的队列。它不是 transcript 的别名。
+将用户 follow-up、steer、task notification、remote message 等按安全点送入主循环的队列。队列内容和 transcript 由独立结构管理。
 
 ### Provider descriptor
 
-描述 provider/model 能力和默认值的元数据；不持有某次会话的凭据或网络 client。
+描述 provider/model 能力和默认值的元数据。不持有某次会话的凭据或网络 client。
 
 ### Provider profile
 
@@ -282,7 +282,7 @@ TUI 和业务层可订阅的当前状态投影。它不是 transcript，也不�
 
 ### Sandbox
 
-可选的 OS 进程文件/网络隔离层，主要约束 Bash 等子进程；是否启用、可用和强制是三个不同问题。
+可选的 OS 进程文件/网络隔离层，主要约束 Bash 等子进程。启用状态、可用状态和强制状态是三个独立属性。
 
 ### Hook
 
@@ -290,15 +290,15 @@ TUI 和业务层可订阅的当前状态投影。它不是 transcript，也不�
 
 ### MCP
 
-Model Context Protocol。外部 server 通过 transport 暴露 tools/resources/prompts 等 capability；OpenClaude 作为 client 时将其包装进本地执行链。
+Model Context Protocol。外部 server 通过 transport 暴露 tools/resources/prompts 等 capability。OpenClaude 作为 client 时将其包装进本地执行链。
 
 ### Plugin
 
-扩展的安装和分发单元，可贡献 commands、agents、skills、hooks、MCP/LSP 配置。它本身不是新 Agent runtime。
+扩展的安装和分发单元，可以贡献 commands、agents、skills、hooks、MCP/LSP 配置。插件复用现有 Agent runtime。
 
 ### Skill
 
-按需发现和加载的领域指令、资源和允许工具声明。其文本仍是上下文，执行能力必须走工具边界。
+按需发现和加载的领域指令、资源和允许工具声明。其文本属于上下文，执行能力必须走工具边界。
 
 ### Task
 
@@ -326,7 +326,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### Context collapse
 
-对上下文片段做 staged collapsing 的优化路径，与标准摘要 compact 相关但不是同一个实现。
+对上下文片段做 staged collapsing 的优化路径。它与标准摘要 compact 使用独立实现。
 
 ### Reactive compact
 
@@ -365,7 +365,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### 阶段二：理解模型与上下文
 
-阅读 05-06 章，对比一个 Anthropic 与一个 OpenAI-compatible request/stream。完成标准：能指出哪些差异属于 descriptor，哪些必须由 adapter 处理。
+阅读 05-06 章，对比一个 Anthropic 与一个 OpenAI-compatible request/stream。完成标准：能够区分 descriptor 差异与 adapter 必须处理的差异。
 
 ### 阶段三：理解能力与安全
 
@@ -377,15 +377,15 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### 阶段五：理解恢复与入口
 
-阅读 10、12、13 章，检查 resume、compact、abort、headless 和 SDK。完成标准：能解释同一核心为何在不同入口保持协议一致，以及哪里有专用适配。
+阅读 10、12、13 章，检查 resume、compact、abort、headless 和 SDK。完成标准包括共享核心的协议一致性和各入口的专用适配。
 
 ### 阶段六：形成工程判断
 
-阅读 15-16 章，选择一个真实改动，写出风险、不变量、focused tests 和完整 PR 验证。完成标准：面试时不只描述功能，还能解释权衡、失败模式和限制。
+阅读 15-16 章，选择一个真实改动，写出风险、不变量、focused tests 和完整 PR 验证。完成标准包括功能、权衡、失败模式和限制的完整说明。
 
 ## 17.7 实践练习
 
-1. 给一次 query stream 画出所有 yield 类型，并标注哪些持久化。
+1. 给一次 query stream 画出所有 yield 类型，并标注持久化类型。
 2. 构造两个并发只读 tool use 和一个 FileEdit，预测调度顺序。
 3. 找出 project settings 试图关闭 sandbox 时的判定路径。
 4. 构造 symlink 指向工作区外，跟踪 FileRead 与 FileEdit 的差异。
@@ -394,18 +394,18 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 7. 跟踪 background Agent 从 tool return 到 task notification。
 8. 在 SDK 中实现最小 `canUseTool`，确保只 resolve 一次并处理 abort。
 9. 模拟 context overflow，列出 API retry 和 query transition 的边界。
-10. 修改一个 feature flag，说明源码、bundle 和 smoke test 会如何变化。
+10. 修改一个 feature flag，并预测源码、bundle 和 smoke test 的变化。
 
 ## 17.8 完整性检查矩阵
 
-读完全部章节后，应能回答：
+读完全部章节后，应满足以下标准：
 
-| 领域 | 验收问题 | 对应章节 |
+| 领域 | 验收标准 | 对应章节 |
 |---|---|---|
-| 架构 | 五层如何协作，控制面/数据面如何分离 | 00 |
-| 构建 | feature、stub、CLI/SDK bundle 如何形成 | 01、15 |
-| 启动 | TUI/headless/SDK/MCP 如何分流 | 02、13 |
-| 状态 | 四类状态和消息协议如何保持一致 | 03、09 |
+| 架构 | 五层协作和控制面/数据面分离 | 00 |
+| 构建 | feature、stub、CLI/SDK bundle 形成过程 | 01、15 |
+| 启动 | TUI/headless/SDK/MCP 分流 | 02、13 |
+| 状态 | 四类状态和消息协议一致性 | 03、09 |
 | 主循环 | 输入到 tool result 再到终止的全时序 | 04 |
 | 上下文 | prompt、memory、attachment、compact | 05 |
 | Provider | 配置、路由、协议、错误和 usage | 06 |
@@ -418,7 +418,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 | 工程 | tests、CI、调试、性能和贡献约束 | 15 |
 | 表达 | 分层讲解、追问、限制和个人贡献 | 16 |
 
-若某一行只能回答功能名而不能画出状态迁移，应回到对应源码完成一次具体追踪。
+只掌握功能名称的领域需要继续回到对应源码完成具体状态迁移追踪。
 
 ## 17.9 快速检索命令
 
@@ -442,7 +442,7 @@ rg -n "name:|inputSchema|checkPermissions|call\(" src/tools/<ToolName>
 rg --files src scripts | rg 'subject.*test\.(ts|tsx)$'
 ```
 
-搜索只是建立候选调用图。最终判断 live path 时，还要检查 feature gate、dynamic import、入口参数和 build stub。
+搜索用于建立候选调用图。live path 判断还需要检查 feature gate、dynamic import、入口参数和 build stub。
 
 ## 17.10 指南索引
 

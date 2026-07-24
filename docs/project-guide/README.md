@@ -1,22 +1,22 @@
 # OpenClaude 项目深度指南
 
-> 对应当前仓库 `@gitlawb/openclaude` 0.24.0。本文档按当前源码说明；实验功能由 `bun:bundle` 的 `feature()` 在构建期裁剪，未启用功能不能仅凭源码存在推断为当前产物可用。
+> 对应当前仓库 `@gitlawb/openclaude` 0.24.0。本文档按当前源码说明。实验功能由 `bun:bundle` 的 `feature()` 在构建期裁剪。当前产物的功能清单以构建结果为准。
 
-## 这套指南解决什么问题
+## 指南目标
 
 读完后，你应能不依赖“它类似 Claude Code”这种模糊表述，完整解释：
 
-1. CLI 如何从 `bin/openclaude` 启动，如何区分交互、Headless、SDK、远程和 SSH 模式。
-2. 一条用户输入如何变成消息、API 流、工具调用、工具结果和下一轮模型请求。
-3. 系统提示、项目指令、附件、技能、记忆和压缩如何组成并维护上下文。
-4. 多供应商如何在统一消息语义下选择 Anthropic、OpenAI-compatible、Gemini、Bedrock、Vertex 等传输路径。
-5. 工具如何注册、过滤、验证、授权、并发执行并回填严格配对的 `tool_result`。
-6. 子代理、后台任务、团队成员、worktree 隔离和跨代理消息如何协作。
+1. CLI 从 `bin/openclaude` 启动，并分流到交互、Headless、SDK、远程和 SSH 模式。
+2. 一条用户输入依次转换为消息、API 流、工具调用、工具结果和下一轮模型请求。
+3. 系统提示、项目指令、附件、技能、记忆和压缩共同组成并维护上下文。
+4. 多供应商在统一消息语义下选择 Anthropic、OpenAI-compatible、Gemini、Bedrock、Vertex 等传输路径。
+5. 工具经过注册、过滤、验证、授权和并发调度，并回填严格配对的 `tool_result`。
+6. 子代理、后台任务、团队成员、worktree 隔离和跨代理消息共同构成协作系统。
 7. React/Ink TUI 的状态源、查询状态机、队列优先级、取消和渲染流程。
 8. 设置优先级、JSONL 会话链、恢复、分支、压缩边界和大文件优化。
 9. MCP、插件、Hooks、LSP、IDE、SDK、gRPC/Server 等扩展边界。
 10. 重试、限流、上下文溢出、无效工具结果、中止、循环保护等异常路径。
-11. 项目的安全模型、可测试边界以及面试时如何讲清设计权衡。
+11. 项目的安全模型、可测试边界和面试设计权衡表述。
 
 ## 推荐阅读顺序
 
@@ -27,7 +27,7 @@
 | 3 | [02 入口与启动链路](02-entrypoints-startup.md) | launcher、Commander、初始化分岔 |
 | 4 | [03 状态与数据模型](03-state-and-data-model.md) | 消息、AppState、bootstrap state、任务状态 |
 | 5 | [04 主 Agent 执行循环](04-query-agent-loop.md) | 一轮请求完整时序和状态迁移 |
-| 6 | [05 上下文、Prompt、记忆与压缩](05-context-prompt-memory.md) | 模型真正看到什么 |
+| 6 | [05 上下文、Prompt、记忆与压缩](05-context-prompt-memory.md) | 模型上下文的实际内容 |
 | 7 | [06 模型供应商与协议适配](06-provider-model-transport.md) | 路由、传输、能力差异、流式协议 |
 | 8 | [07 工具、权限、沙箱与文件安全](07-tools-permissions-security.md) | 工具生命周期和安全判定 |
 | 9 | [08 Agent、任务、团队与编排](08-agents-tasks-orchestration.md) | sync/async、队伍、任务通知、worktree |
@@ -67,22 +67,22 @@ flowchart LR
 - **数据面**：`Message[]`、API stream、`tool_use/tool_result`、task notification、JSONL transcript。
 - **运行状态面**：`AppStateStore`、`QueryGuard`、模块级 command queue、任务表、AbortController。
 
-混淆这三类状态，是阅读该项目最常见的困难。例如：模型选择既有持久配置，又有会话内 `AppState.mainLoopModel`，还有某次子代理运行的局部路由；它们不是同一层。
+这三类状态具有独立的生命周期。模型选择包含持久配置、会话内 `AppState.mainLoopModel` 和某次子代理运行的局部路由。三者分别属于不同状态层。
 
 ### 主线 C：同步路径和后台路径
 
 - 同步 Agent 在父工具调用内持续产出 progress，父查询等待它完成。
-- 异步 Agent 先注册 `local_agent` 任务并立即返回，后台生命周期独立于当前 ESC；结束后用 `<task-notification>` 回到统一命令队列。
-- foreground Agent 可在运行中切换为 background；转换由 signal promise 打断父侧等待，但不销毁 Agent iterator。
-- in-process teammate 与普通 subagent 不同：它有团队身份、邮箱、idle/active 行为和计划审批协议。
+- 异步 Agent 先注册 `local_agent` 任务并立即返回，后台生命周期独立于当前 ESC。结束后用 `<task-notification>` 回到统一命令队列。
+- foreground Agent 可在运行中切换为 background。转换由 signal promise 打断父侧等待。Agent iterator 在转换后继续运行。
+- in-process teammate 具有团队身份、邮箱、idle/active 行为和计划审批协议。
 
 ## 阅读源码时的约定
 
 - 文中源码引用采用 `路径 → 导出符号/职责`，不绑定易漂移的行号。
 - `feature('X')` 表示构建期功能开关，不等同于普通运行时 `if`。
-- `getFeatureValue_CACHED_MAY_BE_STALE()` 是实验/远端配置层；它和构建期开关可能同时存在。
-- `*_DEPRECATED` 常是兼容桥，不代表当前调用无效。
-- “当前 open build”存在少数内部功能 stub；应按构建产物而不是源码文件数量判断可用性。
+- `getFeatureValue_CACHED_MAY_BE_STALE()` 是实验/远端配置层。它和构建期开关可能同时存在。
+- `*_DEPRECATED` 常用于兼容桥。调用者决定其当前有效性。
+- “当前 open build”存在少数内部功能 stub。功能可用性以构建产物为准。
 
 ## 最小验证实践
 
@@ -95,4 +95,4 @@ bun run typecheck
 bun test ./path/to/focused.test.ts
 ```
 
-本指南不是用户使用手册；它是代码级架构说明。具体 provider 配置仍以 `docs/integrations/` 为准。
+本指南提供代码级架构说明。具体 provider 配置以 `docs/integrations/` 为准。

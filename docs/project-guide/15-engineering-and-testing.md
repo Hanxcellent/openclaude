@@ -1,6 +1,6 @@
 # 15. 工程质量、构建与测试方法
 
-本项目的工程难点不是某个算法，而是同一套 Agent 语义需要跨交互 CLI、headless、SDK、MCP、远程会话和多个 provider 保持一致。验证策略因此同时覆盖类型、构建产物、状态机、协议兼容和安全不变量。
+本项目的主要工程难点是跨入口和 provider 保持 Agent 语义一致。相关入口包括交互 CLI、headless、SDK、MCP 和远程会话。验证策略同时覆盖类型、构建产物、状态机、协议兼容和安全不变量。
 
 ## 15.1 开发与发布运行时
 
@@ -8,7 +8,7 @@
 - 发布后的 `bin/openclaude` 启动 Node.js，要求 Node `>=22.0.0`。
 - TypeScript 目标为 ES2023、ESM、strict mode，module resolution 使用 bundler。
 - CLI 和 SDK 分别构建为 `dist/cli.mjs`、`dist/sdk.mjs`。
-- React/Ink 属于 CLI TUI；SDK bundle 明确 externalize UI 依赖。
+- React/Ink 属于 CLI TUI。SDK bundle 明确 externalize UI 依赖。
 
 这种双运行时结构要求同时验证“Bun 能构建/测试”和“Node 能实际加载发布产物”。仅运行 `tsc` 不能发现 bundle resolver、stub、externals 或 Node launcher 问题。
 
@@ -30,20 +30,20 @@
 
 ### 构建期 feature
 
-源码使用 `feature()`，但当前 Bun 会在 JS plugin 之前处理 `bun:` namespace，所以构建脚本在 `onLoad` 阶段直接删除 import 并替换调用为布尔字面量。这使 dead-code elimination 能移除未启用分支。
+源码使用 `feature()`。当前 Bun 会在 JS plugin 之前处理 `bun:` namespace。构建脚本因此在 `onLoad` 阶段直接删除 import，并把调用替换为布尔字面量。dead-code elimination 随后移除未启用分支。
 
 由此得到两个阅读规则：
 
-1. 源码文件存在不代表发布产物包含功能。
+1. 发布产物的功能集合由构建结果决定。
 2. 修改 feature 名或调用形态时，必须同时考虑预处理正则和 source guard tests。
 
 ### Stub 与 open build
 
-部分上游内部模块、原生 addon 或未镜像模块由 build plugin 提供 stub。构建会记录 stub marker，测试检查允许范围，避免一个缺失 import 被静默替换后仍被误认为可用。
+部分上游内部模块、原生 addon 或未镜像模块由 build plugin 提供 stub。构建会记录 stub marker。测试会检查允许范围，并识别被静默替换的缺失 import。
 
-这是一种发行兼容策略，不是功能实现。调用 stub 的 live path 应明确报“unavailable”，不能返回看似成功的空结果。
+这是一种发行兼容策略。stub 不提供完整功能。调用 stub 的 live path 应明确返回“unavailable”错误。空成功结果会掩盖缺失能力。
 
-### 为什么 CLI 不压缩标识符
+### CLI 保留标识符的原因
 
 CLI 只做 whitespace/syntax minify，不做 identifier mangling，因为错误处理和工具执行存在 `constructor.name` 等兼容判断。SDK 保持未压缩，以便构建后做 import leak 检查。这个细节说明 minification 配置也是运行语义的一部分。
 
@@ -55,7 +55,7 @@ CLI 只做 whitespace/syntax minify，不做 identifier mangling，因为错误�
 bun run typecheck
 ```
 
-它覆盖 `src/**/*`，但 `noImplicitAny` 当前为 `false`；不能仅凭 strict mode 假设所有参数都显式推导安全。
+它覆盖 `src/**/*`。`noImplicitAny` 当前为 `false`。类型安全评估需要检查参数的实际推导结果。
 
 公开 SDK 类型、条件类型和 compile-time contract 另由 `tsconfig.type-tests.json` 与 `scripts/typecheck-type-tests.ts` 校验：
 
@@ -79,15 +79,15 @@ bun run typecheck:type-tests
 | 构建守卫 | scripts 下 tests | stub、feature、externals、隐私 |
 | 回归/安全 | `src/__tests__` 与专项 tests | 已知漏洞和历史 bug 不变量 |
 
-### 为什么 full test 限制并发
+### full test 的并发限制
 
 `bun run test:full` 使用 `--max-concurrency=1`。大量测试会修改 `process.env`、cwd、全局 config cache、bootstrap state、mock transport 和临时 credential store。串行模式降低跨文件全局状态干扰，并与 CI 保持一致。
 
-focused test 可以并发快速反馈，但最终涉及全局状态的改动应至少跑对应 suite 的串行组合。
+focused test 可以并发提供快速反馈。涉及全局状态的改动还应运行对应 suite 的串行组合。
 
 ## 15.5 核心命令的真实覆盖
 
-| 命令 | 实际做什么 | 适用时机 |
+| 命令 | 实际行为 | 适用时机 |
 |---|---|---|
 | `bun run build` | 构建 CLI + SDK，并执行 bundle guards | 入口、feature、import、发布面变化 |
 | `bun run smoke` | build 后用 Node 执行 `--version` | 所有运行时/构建变化 |
@@ -100,7 +100,7 @@ focused test 可以并发快速反馈，但最终涉及全局状态的改动应�
 | `bun run test:provider` | API provider 与 context 专项 | provider/transport 变化 |
 | `bun run test:provider-recommendation` | profile/recommendation 专项 | provider 选择变化 |
 | `bun run security:pr-scan` | 检查 PR 意图和敏感改动模式 | 权限、安全、发布前 |
-| `bun run verify:privacy` | 检查 build 无非预期 phone-home | analytics/network/build 变化 |
+| `bun run verify:privacy` | 检查 build 中不存在非预期 phone-home | analytics/network/build 变化 |
 | `bun run doctor:runtime` | 本机 Node/Bun/依赖/环境诊断 | 安装和运行时问题 |
 
 `bun run check` 不包含 `typecheck`、provider 专项、type tests、privacy 或 web build，所以不能把它称为“所有 CI 检查”。应按改动范围组合命令。
@@ -114,7 +114,7 @@ focused test 可以并发快速反馈，但最终涉及全局状态的改动应�
 - TypeScript typecheck 与 type tests。
 - PR intent/security scan。
 
-release workflow 还会重新执行测试、smoke、打包/发布并确认 npm `latest` 指向预期版本。发布后的 dist-tag 验证解决“workflow 成功但 registry 状态未收敛”的问题。
+release workflow 还会重新执行测试、smoke、打包和发布，并确认 npm `latest` 指向预期版本。发布后的 dist-tag 验证用于检测 registry 状态尚未收敛的情况。
 
 Web 是独立子项目，修改 `web/` 要额外运行：
 
@@ -154,22 +154,22 @@ bun run smoke
 
 测试必须包含来源优先级与负例：
 
-- deny 是否覆盖 allow。
-- project setting 是否能越过 policy/user ownership。
+- deny 覆盖 allow。
+- project setting 受 policy/user ownership 约束。
 - symlink、`..`、大小写、Windows/UNC 变体。
-- headless、SDK 和交互审批行为是否一致。
+- headless、SDK 和交互审批行为保持一致。
 - sandbox 不可用时是 fail-open warning 还是 `failIfUnavailable` hard fail。
 
-除 focused tests 外，运行 `bun run security:pr-scan`；涉及网络或 analytics 时再运行 `bun run verify:privacy`。
+运行 focused tests 和 `bun run security:pr-scan`。涉及网络或 analytics 时运行 `bun run verify:privacy`。
 
 ### 修改 TUI
 
 优先测试状态与事件，不依赖完整 ANSI snapshot：
 
-- 输入按键触发何种 action。
-- dialog 的选项和取消是否调用正确 callback。
+- 输入按键对应的 action。
+- dialog 的选项和取消调用正确 callback。
 - terminal 宽度、窄屏、超长字符串和 CJK 宽度。
-- stream 更新是否保持稳定 key，是否造成重复消息。
+- stream 更新保持稳定 key，并避免重复消息。
 
 手工验证应至少覆盖普通终端、重定向/非 TTY 和 resize。若改变用户可见 UI，贡献规则要求 PR 提供截图。
 
@@ -184,15 +184,15 @@ bun run smoke
 bun run deadcode
 ```
 
-SDK 还要验证 async iterator 关闭、中止、环境恢复、permission callback 和多个 session。入口变化需要分别检查 `--print`、structured output、TUI 和 SDK，不能只测 `--version`。
+SDK 还要验证 async iterator 关闭、中止、环境恢复、permission callback 和多个 session。入口变化需要分别检查 `--print`、structured output、TUI 和 SDK。`--version` 仅覆盖 launcher 和最小 bundle 加载路径。
 
 ### 只修改文档
 
-检查相对链接、命令和源码路径；若文档声称某 feature 已启用，应对照 `scripts/build.ts`。纯 Markdown 不需要为形式而运行全量 TypeScript 测试，但必须明确未运行代码测试及原因。
+文档验证需要检查相对链接、命令和源码路径。feature 状态需要对照 `scripts/build.ts`。纯 Markdown 变更可以省略全量 TypeScript 测试。验证记录需要明确说明省略的代码测试及原因。
 
 ## 15.8 测试 Agent 状态机的方法
 
-状态机测试应围绕可观察 transition，而不是内部函数调用次数：
+状态机测试应围绕可观察 transition：
 
 ```text
 给定：消息历史、provider stream、permission mode、AbortSignal
@@ -202,7 +202,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 
 关键不变量包括：
 
-1. 每个 `tool_use` 最终恰有一个匹配 ID 的 `tool_result`，即使拒绝或中止。
+1. 每个 `tool_use` 在成功、拒绝和中止路径中都恰有一个匹配 ID 的 `tool_result`。
 2. Abort 不应被 retry 捕获并重新请求。
 3. context/output recovery 均有次数上限。
 4. 后台任务完成通知最多入队一次。
@@ -210,7 +210,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 6. resume/branch 不应破坏 parent UUID 链。
 7. stream delta 不应重复形成持久化 assistant message。
 
-测试 fixture 应显式构造 provider event，而不是用自然语言结果替代协议事件；否则无法覆盖 partial JSON、stop reason 和 usage 更新。
+测试 fixture 应显式构造 provider event。自然语言结果无法覆盖 partial JSON、stop reason 和 usage 更新。
 
 ## 15.9 Mock、临时状态和清理
 
@@ -222,7 +222,7 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 - fake timers、AbortController 和长期 background iterator。
 - MCP/LSP server、WebSocket、child process 和文件 watcher。
 
-优先使用 `mkdtemp`/测试 helper 创建精确临时目录，并在 `finally`/`afterEach` 清理。涉及共享全局 mutation 的 suite 已有串行锁模式，应沿用相邻测试的 helper，而不是再创建一套全局 reset。
+优先使用 `mkdtemp` 或测试 helper 创建精确临时目录，并在 `finally`/`afterEach` 清理。涉及共享全局 mutation 的 suite 已有串行锁模式。新测试应沿用相邻测试的 helper 和 reset 机制。
 
 ## 15.10 调试路线
 
@@ -236,26 +236,26 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 ### Provider 请求失败
 
 1. 确认 active provider profile、model、base URL 和 key 来源。
-2. 观察统一错误分类，而不是只看 provider 原文。
-3. 对照 request adapter 是否剥离/转换 system、tools 和 thinking 字段。
-4. 区分 API retry 与 query transition；确认是否已经 compact/fallback。
+2. 同时检查统一错误分类和 provider 原文。
+3. 对照 request adapter 对 system、tools 和 thinking 字段的剥离与转换行为。
+4. 区分 API retry 与 query transition。确认当前 compact/fallback 状态。
 5. 使用 `bun run dev:profile` 或明确 `--provider` 复现。
 
 ### 工具卡住
 
 1. 判断等待的是 permission、Hook、tool process 还是 task notification。
-2. 检查 AbortSignal 是否沿 query → runTools → tool.call 传播。
+2. 检查 AbortSignal 沿 query → runTools → tool.call 的传播链。
 3. 检查进程 stdout/stderr drain 与 timeout。
-4. MCP 工具检查 server connection state；background agent 检查 task registry。
-5. 确认 tool_result 是否生成，否则下一轮 provider 可能拒绝消息历史。
+4. MCP 工具检查 server connection state。background agent 检查 task registry。
+5. 确认 tool_result 已生成。缺失结果可能使下一轮 provider 拒绝消息历史。
 
 ### UI 与状态不一致
 
 1. 先判断事实状态位于 bootstrap、AppState、QueryGuard 还是模块 queue。
-2. 检查 selector 是否订阅正确字段，是否原地修改导致未通知。
-3. 检查消息 UUID/key 是否稳定。
+2. 检查 selector 的订阅字段和原地修改产生的通知缺失。
+3. 检查消息 UUID/key 的稳定性。
 4. 区分 transient progress 与持久 message。
-5. 对 resume 场景检查 JSONL 与内存 projection 是否一致。
+5. 对 resume 场景检查 JSONL 与内存 projection 的一致性。
 
 ## 15.11 性能观察点
 
@@ -277,11 +277,11 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 
 1. 非平凡 feature、refactor、依赖或 runtime 变化先建立 issue 共识。
 2. 一个 PR 只解决一个问题，避免顺带格式化和重命名。
-3. 行为变化增加测试；用户可见设置、命令和 provider 行为更新文档。
+3. 行为变化增加测试。用户可见设置、命令和 provider 行为更新文档。
 4. PR 描述写明影响、关联 issue、精确命令、provider 路径和 UI 截图。
 5. 处理 CodeRabbit 和 maintainer 反馈后再请求复审。
 
-评审时优先问：失败模式是否有限、跨入口语义是否一致、第三方 provider 是否被误伤、全局状态是否恢复、是否把构建期不可用功能误接入 live path。
+评审重点包括有限失败模式、跨入口语义一致性、第三方 provider 兼容性、全局状态恢复，以及构建期不可用功能的 live path 隔离。
 
 ## 15.13 源码定位
 
@@ -294,4 +294,3 @@ SDK 还要验证 async iterator 关闭、中止、环境恢复、permission call
 - `.github/workflows/release.yml`：发布与 registry 验证。
 - `src/test/`、`src/__tests__/`：共享 fixture 和跨模块回归。
 - `CONTRIBUTING.md`、`AGENTS.md`：贡献约束和验证要求。
-

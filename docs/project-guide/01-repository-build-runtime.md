@@ -7,11 +7,11 @@
 - 开发/构建/测试：Bun。
 - 安装后运行时：Node.js `>=22.0.0`。
 - CLI 参数：Commander。
-- schema：Zod；MCP JSON Schema 额外用 Ajv。
+- schema：Zod。MCP JSON Schema 额外用 Ajv。
 - 子进程：Node APIs、`execa` 等。
 - API：Anthropic SDK + OpenAI/Gemini/云平台适配。
 
-`package.json` 的 `bin.openclaude` 指向 `bin/openclaude`，发布文件主要包含 launcher、bundled `dist/cli.mjs`、`dist/sdk.mjs` 和声明文件。源码不是按原目录直接交给用户执行。
+`package.json` 的 `bin.openclaude` 指向 `bin/openclaude`。发布文件主要包含 launcher、bundled `dist/cli.mjs`、`dist/sdk.mjs` 和声明文件。用户执行的是构建产物。
 
 ## 2. 目录职责
 
@@ -49,7 +49,7 @@
 4. 对需要保留为外部依赖的模块做显式校验。
 5. 生成宏（如版本）供运行时代码读取。
 
-### 3.1 feature gate 不是普通环境变量
+### 3.1 feature gate 属于构建控制
 
 常见代码：
 
@@ -61,58 +61,58 @@ if (feature('SOME_FEATURE')) {
 
 构建脚本会为不同产物给 gate 常量值，关闭分支能被 DCE。因此：
 
-- 关闭功能的依赖可以不进入 open bundle；
-- 顶层 import 可能破坏 DCE，所以很多模块用受 gate 保护的 lazy `require`；
-- 测试可通过 Bun feature 变体覆盖不同构建形态；
-- 源码存在某个模块，不代表发布 bundle 包含它。
+- 关闭功能的依赖可以不进入 open bundle。
+- 顶层 import 可能破坏 DCE，所以很多模块用受 gate 保护的 lazy `require`。
+- 测试可通过 Bun feature 变体覆盖不同构建形态。
+- 发布 bundle 的模块集合由构建期开关决定。
 
 ### 3.2 两层功能控制
 
-- **构建层**：`feature('X')`，决定代码是否存在。
-- **运行/实验层**：环境变量、settings、`getFeatureValue_CACHED_MAY_BE_STALE()`，决定已存在代码是否启用。
+- **构建层**：`feature('X')` 决定代码的存在状态。
+- **运行/实验层**：环境变量、settings、`getFeatureValue_CACHED_MAY_BE_STALE()` 决定已有代码的启用状态。
 
 典型功能同时需要两层为真。
 
-## 4. 为什么发布使用 Node、构建使用 Bun
+## 4. Node 发布运行时与 Bun 构建运行时
 
 - Bun 提供快速 bundle、test 和 compile-time feature。
 - Node 22 是用户环境的稳定运行契约。
-- 代码不能无意依赖 Bun-only API；`bun:bundle` 是构建宏的特殊例外。
-- `bin/openclaude` 负责运行时版本、安装形态和 bundle 定位，不要求用户用 Bun 启动。
+- 代码不能无意依赖 Bun-only API。`bun:bundle` 是构建宏的特殊例外。
+- `bin/openclaude` 负责运行时版本、安装形态和 bundle 定位。用户使用 Node 启动发布产物。
 
 ## 5. 自维护终端渲染层
 
-`src/ink/` 不只是第三方 Ink 的薄包装。它包含：
+`src/ink/` 提供完整的终端渲染实现。它包含：
 
-- React reconciler 与自定义终端 DOM；
-- Yoga layout；
-- front/back `Frame` 和屏幕 diff；
-- ANSI tokenizer、grapheme width、双向文本；
-- scroll box、selection、hit test、cursor；
+- React reconciler 与自定义终端 DOM。
+- Yoga layout。
+- front/back `Frame` 和屏幕 diff。
+- ANSI tokenizer、grapheme width、双向文本。
+- scroll box、selection、hit test、cursor。
 - terminal raw input、resize、focus、alternate screen。
 
-`src/ink/renderer.ts` 复用 `Output` 和字符 cache；当窗口 resize、remount、首帧或前帧被 selection 污染时，才选择高写入比/full redraw 路径。该优化直接影响长对话滚动和 streaming 的 CPU/闪烁表现。
+`src/ink/renderer.ts` 复用 `Output` 和字符 cache。当窗口 resize、remount、首帧或前帧被 selection 污染时，才选择高写入比/full redraw 路径。该优化直接影响长对话滚动和 streaming 的 CPU/闪烁表现。
 
 ## 6. 生成代码和源数据
 
 provider 集成采用 descriptor + generator：
 
-1. descriptor 定义 vendor/gateway/brand/model；
-2. `bun run integrations:generate` 生成 inventory/manifest；
-3. `src/integrations/index.ts` 懒加载 generated artifacts；
+1. descriptor 定义 vendor/gateway/brand/model。
+2. `bun run integrations:generate` 生成 inventory/manifest。
+3. `src/integrations/index.ts` 懒加载 generated artifacts。
 4. registry 查询自动触发 `ensureIntegrationsLoaded()`。
 
-不要手改 generated 文件来增加 provider；这会在下一次生成时丢失。
+provider 变更需要修改 descriptor 并重新生成产物。生成流程会覆盖对 generated 文件的手工修改。
 
 ## 7. 测试布局
 
 测试通常与源码共置为 `*.test.ts(x)`，另有 `src/__tests__/` 和根 `tests/`。常见层级：
 
-- 纯函数单测：settings merge、provider error parsing、path safety；
-- 状态机测试：QueryGuard、query transitions、retry breaker；
-- Tool contract 测试：input validation、permission、output mapping；
-- React/Ink 组件测试：PromptInput、REPL lifecycle；
-- provider 测试：协议形状和模型推荐；
+- 纯函数单测：settings merge、provider error parsing、path safety。
+- 状态机测试：QueryGuard、query transitions、retry breaker。
+- Tool contract 测试：input validation、permission、output mapping。
+- React/Ink 组件测试：PromptInput、REPL lifecycle。
+- provider 测试：协议形状和模型推荐。
 - smoke：打包产物能在 Node 环境启动。
 
 ## 8. 常用验证命令
@@ -132,9 +132,9 @@ bun run test:provider-recommendation
 
 ## 9. 阅读建议
 
-- 先从导出符号和 `buildTool()` 定义读，不要从 UI 文案反推行为。
+- 阅读工作应从导出符号和 `buildTool()` 定义开始。UI 文案仅用于呈现行为。
 - 看见 lazy `require` 时先查 gate。
-- 看见 `_DEPRECATED` 时查调用者；它可能是公开兼容层而非死代码。
+- 看见 `_DEPRECATED` 时需要检查调用者。该标记可能对应公开兼容层。
 - 遇到 provider 分支，先判断是 descriptor 元数据、env compatibility，还是不可消除的协议差异。
 
 下一章：[02 入口与启动链路](02-entrypoints-startup.md)。
