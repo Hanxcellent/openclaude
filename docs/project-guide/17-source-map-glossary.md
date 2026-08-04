@@ -111,6 +111,9 @@ bin/openclaude
 | Stop hook 运行时机 | query terminal branch | Hook service |
 | Abort 传播失败 | query AbortSignal | runTools → tool.call → child process |
 | 失败循环 | `src/query/toolFailureLoopGuard.ts` | retry 和状态变化标记 |
+| 会话空闲误终止 | `src/utils/QueryGuard.ts` | `src/screens/REPL.tsx`、queryActivity |
+| 权限等待计时 | `src/hooks/toolPermission/handlers/interactiveHandler.ts` | QueryGuard beginUserInteraction |
+| 工具活动登记 | `src/services/tools/toolExecution.ts` | QueryGuard registerActivity |
 
 ### Context 与 prompt
 
@@ -164,6 +167,9 @@ bin/openclaude
 | 跨 Agent 消息 | `SendMessageTool` | team mailbox |
 | 协作任务依赖 | TaskCreate/Update/List tools | todo DAG utilities |
 | worktree 隔离 | Enter/ExitWorktreeTool | Git worktree utils |
+| MCP 静默工具活性 | `src/services/mcp/client.ts` | MCP activity tests |
+| TaskOutput 等待活性 | `src/tools/TaskOutputTool/` | TaskOutput activity tests |
+| 子 Agent 进度传播 | `src/tools/AgentTool/` | 父工具 progress callback |
 
 ### UI 与终端
 
@@ -176,6 +182,9 @@ bin/openclaude
 | 滚动跳动 | virtual message/fullscreen paths | custom Ink renderer |
 | CJK 宽度错误 | `src/ink/` line width/bidi | terminal size hooks |
 | keybinding 覆盖 | `src/keybindings/` | settings/keybinding warnings |
+| Footer 保持挂载 | `src/components/PromptInput/KeepMounted.tsx` | PromptInputFooter |
+| Footer 展示顺序 | `src/components/PromptInput/footerVisibility.ts` | PromptInputFooterLeftSide |
+| StatusLine 隐藏副作用 | `src/components/StatusLine.tsx` | StatusLine active tests |
 
 ### 配置与会话
 
@@ -213,6 +222,19 @@ bin/openclaude
 | bridge 外部消息接入 | `src/bridge/` | session 接入认证 |
 | SSH | `src/ssh/` | remoteIO/unix socket auth |
 | gRPC | `src/grpc/server.ts` | `scripts/start-grpc.ts` |
+| 共享标题生成 | `src/utils/sessionTitle.ts` | REPL、useRemoteSession、print control request |
+
+### 简历技术专题
+
+| 技术主题 | 主要源码 | 主要测试 | 对应提交 |
+|---|---|---|---|
+| 人工等待挂起与恢复 | `src/utils/QueryGuard.ts`、interactiveHandler | QueryGuard、interactiveHandler tests | `2047fb25`，PR #1879 |
+| 长运行工具活性上报 | MCP client、TaskOutputTool、AgentTool | MCP、TaskOutput、Agent routing tests | `c23b6e1c`，PR #2022 |
+| Footer 零高度保活 | KeepMounted、PromptInputFooter | KeepMounted、PromptInputFooter tests | `4faf666c`，PR #1943 |
+| Footer 隐藏副作用暂停 | footerVisibility、StatusLine、FooterLeftSide | StatusLine active、Footer visibility tests | `f961ae74`，PR #1963 |
+| 标题 API 错误拦截 | `src/utils/sessionTitle.ts` | `src/utils/sessionTitle.test.ts` | `86fb6db8`，PR #1992 |
+
+这些提交记录包含改动背景、评审修正和测试范围。`git show <commit>` 可以查看对应实现快照。
 
 ## 17.4 关键数据类型
 
@@ -250,7 +272,19 @@ TUI 和业务代码可订阅的当前状态快照。内容包括任务、权限�
 
 ### QueryGuard
 
-记录主 query 的 dispatching、running 和结束状态。多个 UI 操作同时提交输入时，QueryGuard 只允许其中一个启动主 query。
+记录主 query 的 idle、dispatching、running 和结束状态。多个 UI 操作同时提交输入时，QueryGuard 只允许其中一个启动主 query。QueryGuard 还维护最近活动时间、请求总时长、工具期限、人工交互挂起计数和 generation。
+
+### Query activity
+
+工具执行和模型事件通过 Query activity 接口登记活动。接口支持普通活动登记、工具期限和人工交互挂起。长运行工具的周期性进度最终通过该接口刷新主请求活动时间。
+
+### Footer active contract
+
+Footer 组件使用 mounted、visible 和 active 三类状态。KeepMounted 保留 React 子树。零高度容器控制终端输出。active 属性控制外部命令、刷新任务和定时器。
+
+### API error message
+
+模型调用可以返回带 API 错误标记的 Assistant 消息。该结果具有正常消息结构，并表示供应商请求失败。消费方需要在普通文本解析前检查错误标记。
 
 ### Command queue
 
@@ -381,7 +415,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 
 ### 阶段六：形成工程判断
 
-阅读 15-16 章，选择一个真实改动，写出风险、必须保持的规则、focused tests 和完整 PR 验证。完成标准包括功能、取舍、失败模式和限制的完整说明。
+阅读 15、16、18 章，选择一个真实改动，写出风险、必须保持的规则、focused tests 和完整 PR 验证。完成标准包括功能、取舍、失败模式和限制的完整说明。
 
 ## 17.7 实践练习
 
@@ -395,6 +429,9 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 8. 在 SDK 中实现最小 `canUseTool`，确保只 resolve 一次并处理 abort。
 9. 模拟 context overflow，列出 API retry 条件和 query 重启条件。
 10. 修改一个 feature flag，并预测源码、bundle 和 smoke test 的变化。
+11. 使用虚拟时间推演人工交互挂起、嵌套恢复和工具活性上报。
+12. 推演 Footer 从建议列表切换到 Ctrl+C 反馈，再回到 StatusLine 的组件状态。
+13. 构造带 API 错误标记的标题响应，并跟踪 REPL、Remote 和 SDK 的结果。
 
 ## 17.8 完整性检查矩阵
 
@@ -417,6 +454,7 @@ Git 层面的独立工作目录，用于并行修改隔离。与会话消息 bra
 | 多入口 | print、structured IO、SDK、remote、gRPC | 13 |
 | 工程 | tests、CI、调试、性能和贡献约束 | 15 |
 | 表达 | 分层讲解、追问、限制和个人贡献 | 16 |
+| 简历技术专题 | 存活判定、Footer 生命周期、标题响应边界 | 18 |
 
 只能说出功能名称时，需要继续阅读对应源码，并记录输入、状态变化、输出和错误处理流程。
 
@@ -463,3 +501,5 @@ rg --files src scripts | rg 'subject.*test\.(ts|tsx)$'
 - [14 安全检查与威胁模型](14-security-model.md)
 - [15 工程质量与测试方法](15-engineering-and-testing.md)
 - [16 架构场景串联](16-interview-playbook.md)
+- [17 源码索引与术语](17-source-map-glossary.md)
+- [18 简历技术专题](18-resume-technical-deep-dives.md)

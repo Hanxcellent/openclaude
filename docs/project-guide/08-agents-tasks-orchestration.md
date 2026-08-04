@@ -177,4 +177,20 @@ Teammate 可以运行普通同步 Subagent。团队结构保持扁平，teammate
 
 会话编排模块决定启动同步或后台 Agent。任务模块保存状态和输出。命令队列传递完成通知。持久化模块保存子 Agent 历史。权限模块处理子 Agent 工具。Git Worktree 提供文件隔离。团队模块管理身份、消息和计划。
 
+## 17. 长运行任务的活性传播
+
+同步 Subagent 的父会话通过 AgentTool 等待子 Agent。子 Agent 内部可能运行长时间没有文本输出的 MCP 工具，也可能阻塞等待其他 Task。
+
+子 Agent 会将 mcp_progress 和 waiting_for_task 事件传给父工具进度回调。父工具回调将事件登记为主会话活动。该传播保证父会话和子会话使用一致的存活信息。
+
+```mermaid
+flowchart LR
+  A[子 Agent 长运行工具] --> B[子 Agent 进度]
+  B --> C[AgentTool]
+  C --> D[父工具进度]
+  D --> E[主会话活动时间]
+```
+
+后台 Agent 具有独立主请求状态。父会话结束不会停止后台 Agent 的存活计时。后台任务使用自己的停止操作和期限。
+
 下一章说明终端界面怎样展示这些状态并处理用户输入。

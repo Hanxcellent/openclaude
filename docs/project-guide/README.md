@@ -15,6 +15,7 @@
 7. 会话记录、恢复、分支和大型工具结果的保存方式。
 8. 权限、目录信任、路径检查、沙箱、网络和凭据保护。
 9. 限流、上下文溢出、重复失败、中止和进程退出等异常处理。
+10. 会话存活判定、终端 Footer 生命周期和标题响应校验三项简历技术专题。
 
 ## 总体架构
 
@@ -111,6 +112,7 @@ sequenceDiagram
 | [12 错误与恢复](12-errors-retries-recovery-edge-cases.md) | 重试、降级、循环保护、中止和退出 |
 | [13 使用入口与部署形态](13-entrypoint-modes-sdk-remote.md) | TUI、Headless、SDK、Remote、SSH 和 gRPC |
 | [14 安全模型](14-security-model.md) | 信任、权限、路径、进程、网络和凭据 |
+| [18 简历技术专题](18-resume-technical-deep-dives.md) | 会话看门狗、Footer 生命周期和 LLM 响应边界 |
 
 ## 附录
 
@@ -121,3 +123,7 @@ sequenceDiagram
 | [17 源码索引与术语](17-source-map-glossary.md) | 源码定位、术语解释和进一步查证 |
 
 主报告可以独立阅读。附录用于验证实现细节和定位源码。
+
+简历内容的集中学习入口为 [18 简历技术专题](18-resume-technical-deep-dives.md)。该章提供故障背景、状态模型、执行流程、异常路径、测试矩阵和口头介绍模板。
+
+需要快速准备项目介绍时，按照 [简历内容优先阅读目录](resume-priority/README.md) 中的顺序阅读。
