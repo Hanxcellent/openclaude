@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "03-state-and-data-model.md",
-                "mode": "preview",
+                "file": "08-agents-tasks-orchestration.md",
+                "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "03-state-and-data-model"
+              "title": "08-agents-tasks-orchestration"
             }
           }
         ]
@@ -41,7 +41,9 @@
               "type": "file-explorer",
               "state": {
                 "sortOrder": "alphabetical",
-                "autoReveal": false
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
               },
               "icon": "lucide-folder-closed",
               "title": "文件列表"
@@ -185,26 +187,26 @@
   },
   "active": "0d550439e7844300",
   "lastOpenFiles": [
-    "02-entrypoints-startup.md",
-    "01-repository-build-runtime.md",
-    "00-architecture-overview.md",
-    "15-engineering-and-testing.md",
-    "16-interview-playbook.md",
-    "17-source-map-glossary.md",
-    "18-resume-technical-deep-dives.md",
-    "14-security-model.md",
-    "13-entrypoint-modes-sdk-remote.md",
-    "12-errors-retries-recovery-edge-cases.md",
-    "11-mcp-plugins-hooks-lsp-commands.md",
-    "10-configuration-session-persistence.md",
     "09-tui-interaction-flow.md",
+    "10-configuration-session-persistence.md",
+    "11-mcp-plugins-hooks-lsp-commands.md",
+    "12-errors-retries-recovery-edge-cases.md",
+    "13-entrypoint-modes-sdk-remote.md",
+    "14-security-model.md",
+    "15-engineering-and-testing.md",
+    "01-repository-build-runtime.md",
+    "02-entrypoints-startup.md",
+    "03-state-and-data-model.md",
+    "04-query-agent-loop.md",
+    "05-context-prompt-memory.md",
+    "06-provider-model-transport.md",
+    "07-tools-permissions-security.md",
     "08-agents-tasks-orchestration.md",
     "resume-priority/README.md",
-    "07-tools-permissions-security.md",
-    "06-provider-model-transport.md",
-    "05-context-prompt-memory.md",
-    "04-query-agent-loop.md",
     "README.md",
-    "03-state-and-data-model.md"
+    "18-resume-technical-deep-dives.md",
+    "00-architecture-overview.md",
+    "16-interview-playbook.md",
+    "17-source-map-glossary.md"
   ]
 }

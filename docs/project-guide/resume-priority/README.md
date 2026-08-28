@@ -4,16 +4,16 @@
 
 ## 第一组：核心内容
 
-| 顺序 | 阅读内容 | 掌握目标 |
-|---:|---|---|
-| 1 | [三项改进的架构位置](../18-resume-technical-deep-dives.md#181-三项改进的架构位置) | 明确每项改进涉及的核心模块和关联模块 |
-| 2 | [会话存活判定机制](../18-resume-technical-deep-dives.md#182-会话存活判定机制) | 掌握空闲超时、请求总时长和误终止场景 |
-| 3 | [引用计数式挂起与恢复](../18-resume-technical-deep-dives.md#183-引用计数式挂起与恢复) | 掌握计数、时间补偿、恢复时机和异常清理 |
-| 4 | [长运行工具的周期性活性上报](../18-resume-technical-deep-dives.md#184-长运行工具的周期性活性上报) | 掌握 MCP、TaskOutput 和 Subagent 的活性传播 |
-| 5 | [终端 Footer 生命周期](../18-resume-technical-deep-dives.md#185-终端-footer-生命周期) | 掌握 mounted、visible、active 三类状态 |
-| 6 | [LLM 响应处理边界](../18-resume-technical-deep-dives.md#186-llm-响应处理边界) | 掌握错误标记、共享校验、回退和失败指标 |
-| 7 | [相关追问知识矩阵](../18-resume-technical-deep-dives.md#188-相关追问知识矩阵) | 检查关键设计理由和异常路径 |
-| 8 | [三项经历的连续介绍](../18-resume-technical-deep-dives.md#189-三项经历的连续介绍) | 形成完整口头介绍 |
+|  顺序 | 阅读内容                                                                      | 掌握目标                               |
+| --: | ------------------------------------------------------------------------- | ---------------------------------- |
+|   1 | [三项改进的架构位置](../18-resume-technical-deep-dives.md#181-三项改进的架构位置)           | 明确每项改进涉及的核心模块和关联模块                 |
+|   2 | [会话存活判定机制](../18-resume-technical-deep-dives.md#182-会话存活判定机制)             | 掌握空闲超时、请求总时长和误终止场景                 |
+|   3 | [引用计数式挂起与恢复](../18-resume-technical-deep-dives.md#183-引用计数式挂起与恢复)         | 掌握计数、时间补偿、恢复时机和异常清理                |
+|   4 | [长运行工具的周期性活性上报](../18-resume-technical-deep-dives.md#184-长运行工具的周期性活性上报)   | 掌握 MCP、TaskOutput 和 Subagent 的活性传播 |
+|   5 | [终端 Footer 生命周期](../18-resume-technical-deep-dives.md#185-终端-footer-生命周期) | 掌握 mounted、visible、active 三类状态     |
+|   6 | [LLM 响应处理边界](../18-resume-technical-deep-dives.md#186-llm-响应处理边界)         | 掌握错误标记、共享校验、回退和失败指标                |
+|   7 | [相关追问知识矩阵](../18-resume-technical-deep-dives.md#188-相关追问知识矩阵)             | 检查关键设计理由和异常路径                      |
+|   8 | [三项经历的连续介绍](../18-resume-technical-deep-dives.md#189-三项经历的连续介绍)           | 形成完整口头介绍                           |
 
 ## 第二组：架构背景
 
